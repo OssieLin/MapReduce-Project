@@ -11,6 +11,7 @@ We are building a small MapReduce system that runs on a single VM with Docker Co
 - **Output:** JSON
 - **User jobs:** a Python file defining `map_fn` and `reduce_fn` (and optionally `combine_fn`)
 - **Special features:** (1) **combiners**, (2) **worker failure handling**
+<img width="1840" height="1200" alt="architecture" src="https://github.com/user-attachments/assets/864364c4-fe66-446f-9009-29013eec1380" />
 
 
 
