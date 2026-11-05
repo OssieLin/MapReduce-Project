@@ -1,6 +1,6 @@
 # Design Doc: MapReduce (Honors Project 1)
 
-**Team:** _<Eric>_, _<Osmond>_
+**Team:** Eric, Osmond <br>
 **Last updated:** Nov 6, 2026
 
 ## 1. Overview
@@ -105,6 +105,8 @@ The combiner emits `(sum, count)` pairs rather than averages, because averages a
 ## 4. Communication and Architecture
 
 We replicate the **master/worker architecture** from the MapReduce paper (the figure in our brainstorm): a single boss (master) assigns map and reduce tasks to workers, and workers read and write data through shared storage.
+
+![architecture](https://github.com/OssieLin/MapReduce-Project/blob/main/architecture.png)
 
 | Path | Mechanism |
 |---|---|
