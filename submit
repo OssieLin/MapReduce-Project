@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Submit a MapReduce job to the boss and wait for it to finish."""
+import argparse
+import os
+import sys
+import time
+
+import requests
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mapreduce.common import check_job_source  # noqa: E402
+
+BOSS_URL = os.environ.get("BOSS_URL", "http://localhost:5000")
+
+USAGE = """usage: ./submit -i <input_path> -o <output_path> -j <job_file.py>
+                -m <num_maps> -r <num_reduces>
+
+Submit a MapReduce job and wait for it to finish.
+
+required:
+  -i, --input <input_path>      input CSV file or directory in shared storage
+  -o, --output <output_path>    output location in shared storage (JSON)
+  -j, --job <job_file.py>       file containing map_fn and reduce_fn
+  -m, --maps <num_maps>         number of map tasks
+  -r, --reduces <num_reduces>   number of reduce tasks
+optional:
+  -h, --help                    show this message
+"""
+
+
+def main():
+    if len(sys.argv) == 1:
+        print(USAGE, end="")
+        sys.exit(2)
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("-i", "--input", required=True)
+    p.add_argument("-o", "--output", required=True)
+    p.add_argument("-j", "--job", required=True)
+    p.add_argument("-m", "--maps", type=int, required=True)
+    p.add_argument("-r", "--reduces", type=int, required=True)
+    p.add_argument("-h", "--help", action="store_true")
+    try:
+        a = p.parse_args()
+    except SystemExit:
+        print(USAGE, end="", file=sys.stderr)
+        sys.exit(2)
+    if a.help:
+        print(USAGE, end="")
+        return
+
+    try:
+        source = open(a.job).read()
+        check_job_source(source)
+    except (OSError, ValueError) as e:
+        sys.exit(f"error: {e}")
+
+    try:
+        r = requests.post(f"{BOSS_URL}/submit_job", json={
+            "input": a.input, "output": a.output, "job_source": source,
+            "num_maps": a.maps, "num_reduces": a.reduces}, timeout=30)
+    except requests.RequestException as e:
+        sys.exit(f"error: cannot reach boss at {BOSS_URL}: {e}")
+    if r.status_code != 200:
+        sys.exit(f"error: {r.json().get('error', r.text)}")
+    job_id = r.json()["job_id"]
+    print(f"submitted job {job_id}")
+
+    last = None
+    while True:
+        s = requests.get(f"{BOSS_URL}/job/{job_id}", timeout=30).json()
+        line = (f"[{s['status']}] maps {s['maps_done']}/{s['maps_total']}  "
+                f"reduces {s['reduces_done']}/{s['reduces_total']}")
+        if line != last:
+            print(line, flush=True)
+            last = line
+        if s["status"] == "DONE":
+            print(f"done in {s['elapsed']:.2f}s; output in {s['output']}")
+            return
+        if s["status"] == "FAILED":
+            sys.exit(f"job failed: {s['error']}")
+        time.sleep(0.3)
+
+
+if __name__ == "__main__":
+    main()
