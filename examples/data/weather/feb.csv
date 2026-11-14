@@ -1,0 +1,8 @@
+city,date,temp
+Madison,2026-02-01,-1.0
+Madison,2026-02-02,1.0
+Chicago,2026-02-01,3.0
+Miami,2026-02-01,26.0
+Miami,2026-02-02,28.0
+"Portland, OR",2026-02-01,8.0
+"Portland, OR",2026-02-02,10.0

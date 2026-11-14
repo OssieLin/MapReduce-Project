@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Upload CSV data to shared storage (a plain copy into ./shared)."""
+import argparse
+import os
+import shutil
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SHARED = os.path.abspath(os.environ.get("SHARED_DIR", os.path.join(HERE, "shared")))
+
+USAGE = """usage: ./upload_data -f <local_path> -d <storage_path> [-t <type>]
+
+Upload a local file or directory to shared storage.
+
+required:
+  -f, --file <local_path>     local file or directory to upload
+  -d, --dest <storage_path>   destination path in shared storage
+                              (e.g. /input/sales)
+optional:
+  -t, --type <type>           input data type; only "csv" is
+                              supported (default: csv)
+  -h, --help                  show this message
+"""
+
+
+def main():
+    try:
+        _main()
+    except PermissionError as e:
+        sys.exit(f"error: {e}\nshared storage is not writable by you; start the "
+                 "cluster once (docker compose up -d) to fix permissions, or run:\n"
+                 f"  sudo chown -R $USER {SHARED}")
+
+
+def _main():
+    if len(sys.argv) == 1:
+        print(USAGE, end="")
+        sys.exit(2)
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("-f", "--file", required=True)
+    p.add_argument("-d", "--dest", required=True)
+    p.add_argument("-t", "--type", default="csv")
+    p.add_argument("-h", "--help", action="store_true")
+    try:
+        a = p.parse_args()
+    except SystemExit:
+        print(USAGE, end="", file=sys.stderr)
+        sys.exit(2)
+    if a.help:
+        print(USAGE, end="")
+        return
+    if a.type != "csv":
+        sys.exit(f'error: unsupported type "{a.type}" (only csv)')
+    if not os.path.exists(a.file):
+        sys.exit(f"error: {a.file} does not exist")
+
+    dest = os.path.normpath(os.path.join(SHARED, a.dest.lstrip("/")))
+    if not (dest == SHARED or dest.startswith(SHARED + os.sep)):
+        sys.exit("error: destination escapes shared storage")
+
+    count = 0
+    if os.path.isdir(a.file):
+        for d, _, names in os.walk(a.file):
+            for n in sorted(names):
+                if n.lower().endswith(".csv"):
+                    rel = os.path.relpath(os.path.join(d, n), a.file)
+                    target = os.path.join(dest, rel)
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    shutil.copy2(os.path.join(d, n), target)
+                    count += 1
+    else:
+        if not a.file.lower().endswith(".csv"):
+            sys.exit("error: input file must be a .csv")
+        target = dest if dest.lower().endswith(".csv") else os.path.join(dest, os.path.basename(a.file))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copy2(a.file, target)
+        count = 1
+    if count == 0:
+        sys.exit("error: no .csv files found to upload")
+    print(f"uploaded {count} file(s) to {a.dest}")
+
+
+if __name__ == "__main__":
+    main()
