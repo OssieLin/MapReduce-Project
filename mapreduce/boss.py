@@ -456,4 +456,4 @@ def job_status(job_id):
 if __name__ == "__main__":
     storage.prepare_root()
     threading.Thread(target=_monitor, daemon=True).start()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), threaded=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5050)), threaded=True)
