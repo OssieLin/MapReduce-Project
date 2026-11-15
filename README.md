@@ -3,6 +3,7 @@
 A small MapReduce system that runs on one VM with Docker Compose: one **boss**
 and four **workers** (1 CPU each). See `design.md` for the design.
 
+
 ## 1. What to build
 ```bash
 docker compose build
@@ -12,6 +13,8 @@ No protobufs or code generation are needed.
 ## 2. What to install (client, on the host)
 Python 3.11+ and `requests`:
 ```bash
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt   # or: pip install requests
 ```
 
@@ -21,6 +24,12 @@ docker compose up -d          # boss on localhost:5000, workers 1-4
 docker compose logs -f        # optional
 ```
 Shared storage is `./shared` on the host, `/shared` in every container.
+
+If port 5000 is already taken (macOS AirPlay Receiver, another project), use another port:
+```bash
+BOSS_PORT=5001 docker compose up -d
+export BOSS_URL=http://localhost:5001     # tells the client tools where the boss is
+```
 
 ## 4. Upload example data
 ```bash
@@ -46,7 +55,18 @@ Keys/values must be JSON-serializable.
 python3 ./submit -i /input/weather -o /output/avg_temp -j examples/avg_temp.py -m 4 -r 2
 cat shared/output/avg_temp/part-*.jsonl
 ```
-Expected output (one `[key, value]` per line, sorted by key per file):
+| Flag | Required | Meaning |
+|---|---|---|
+| `-i, --input <path>` | yes | CSV file or directory in shared storage, e.g. `/input/weather` |
+| `-o, --output <path>` | yes | Output directory in shared storage; **must not exist yet** |
+| `-j, --job <file.py>` | yes | Local job file defining `map_fn` and `reduce_fn` |
+| `-m, --maps <M>` | yes | Number of map tasks (input is split into M byte ranges) |
+| `-r, --reduces <R>` | yes | Number of reduce tasks = number of output files |
+| `-C, --combiner` | no | Run `combine_fn` on each map task's output before the shuffle |
+| `-h, --help` | no | Show usage (also shown when run with no flags) |
+ 
+Expected output (one `[key, value]` per line, sorted by key within each file):
+
 ```
 ["Chicago", 1.0]
 ["Madison", -2.0]
@@ -57,6 +77,16 @@ Expected output (one `[key, value]` per line, sorted by key per file):
 
 `BOSS_URL` (default `http://localhost:5000`) and `SHARED_DIR` (default `./shared`)
 can be overridden by environment variables for the client tools.
+
+## Debug
+| Symptom | Check | Fix |
+|---|---|---|
+| `submit` errors with `HTTP 403 ... not a reply from the MapReduce boss` | `curl -i $BOSS_URL/job/x` should return `{"error": "unknown job"}` | Something else owns the port: use `BOSS_PORT` and `BOSS_URL` as in step 3 |
+| `service "boss" is not running` | `docker compose ps -a` shows boss as `Created` | Port conflict at startup: same fix |
+| `cannot reach boss` | `docker compose ps` | `docker compose up -d` |
+| `zsh: no matches found: shared/output/.../part-*.jsonl` | the job never finished | Read `submit`'s error message |
+| Job stuck at `maps k/M` | `docker compose logs worker1` | A killed worker's task is not reassigned yet: restart the job with a new `-o` |
+
 
 ## Layout
 - `mapreduce/boss.py` – Flask boss: job/task state, `/submit_job`, `/get_task`, `/task_done`, `/job/<id>`

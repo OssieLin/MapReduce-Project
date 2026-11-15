@@ -16,7 +16,8 @@ services:
     build: .
     command: python -m mapreduce.boss
     ports:
-      - "127.0.0.1:5000:5000"
+      # change if needed
+      - "127.0.0.1:5001:5000"
     volumes:
       - ./shared:/shared
   # all the worker will use the same config
