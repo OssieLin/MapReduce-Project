@@ -20,8 +20,9 @@ services:
       - "127.0.0.1:5001:5000"
     volumes:
       - ./shared:/shared
-  # all the worker will use the same config
-  worker1: *worker
-  worker2: *worker
-  worker3: *worker
-  worker4: *worker
+  # all the worker will use the same config; the hostname is the worker id
+  # (stable across restarts, readable in logs)
+  worker1: {<<: *worker, hostname: worker1}
+  worker2: {<<: *worker, hostname: worker2}
+  worker3: {<<: *worker, hostname: worker3}
+  worker4: {<<: *worker, hostname: worker4}

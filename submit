@@ -13,7 +13,7 @@ from mapreduce.common import check_job_source  # noqa: E402
 BOSS_URL = os.environ.get("BOSS_URL", "http://localhost:5000")
 
 USAGE = """usage: ./submit -i <input_path> -o <output_path> -j <job_file.py>
-                -m <num_maps> -r <num_reduces> [-C]
+                -m <num_maps> -r <num_reduces> [-C] [-B]
 
 Submit a MapReduce job and wait for it to finish.
 
@@ -25,6 +25,7 @@ required:
   -r, --reduces <num_reduces>   number of reduce tasks
 optional:
   -C, --combiner                run the job's combine_fn on map output
+  -B, --backup                  launch backup copies of straggling tasks
   -h, --help                    show this message
 """
 
@@ -40,6 +41,7 @@ def main():
     p.add_argument("-m", "--maps", type=int, required=True)
     p.add_argument("-r", "--reduces", type=int, required=True)
     p.add_argument("-C", "--combiner", action="store_true")
+    p.add_argument("-B", "--backup", action="store_true")
     p.add_argument("-h", "--help", action="store_true")
     try:
         a = p.parse_args()
@@ -60,7 +62,7 @@ def main():
         r = requests.post(f"{BOSS_URL}/submit_job", json={
             "input": a.input, "output": a.output, "job_source": source,
             "num_maps": a.maps, "num_reduces": a.reduces,
-            "use_combiner": a.combiner}, timeout=30)
+            "use_combiner": a.combiner, "use_backup": a.backup}, timeout=30)
     except requests.RequestException as e:
         sys.exit(f"error: cannot reach boss at {BOSS_URL}: {e}")
     if r.status_code != 200:
@@ -73,6 +75,11 @@ def main():
         s = requests.get(f"{BOSS_URL}/job/{job_id}", timeout=30).json()
         line = (f"[{s['status']}] maps {s['maps_done']}/{s['maps_total']}  "
                 f"reduces {s['reduces_done']}/{s['reduces_total']}")
+        if s.get("reexecutions"):
+            line += f" ({s['reexecutions']} re-executed)"
+        if s.get("backups_launched"):
+            n = s["backups_launched"]
+            line += f" ({n} backup{'s' * (n > 1)}, {s.get('backups_won', 0)} won)"
         if line != last:
             print(line, flush=True)
             last = line

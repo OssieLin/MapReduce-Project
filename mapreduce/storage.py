@@ -77,6 +77,25 @@ def atomic_open(path):
         raise
 
 
+def append_line(path, line):
+    """Append one line (e.g. an event log entry); not atomic, small writes only."""
+    full = resolve(path)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+def remove_temp_files(path):
+    """Best-effort delete of .tmp-* files left under path by killed writers."""
+    for d, _, names in os.walk(resolve(path)):
+        for n in names:
+            if ".tmp-" in n:
+                try:
+                    os.remove(os.path.join(d, n))
+                except OSError:
+                    pass
+
+
 def write_atomic(path, text):
     with atomic_open(path) as f:
         f.write(text)
