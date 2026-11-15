@@ -13,7 +13,7 @@ from mapreduce.common import check_job_source  # noqa: E402
 BOSS_URL = os.environ.get("BOSS_URL", "http://localhost:5000")
 
 USAGE = """usage: ./submit -i <input_path> -o <output_path> -j <job_file.py>
-                -m <num_maps> -r <num_reduces>
+                -m <num_maps> -r <num_reduces> [-C]
 
 Submit a MapReduce job and wait for it to finish.
 
@@ -24,6 +24,7 @@ required:
   -m, --maps <num_maps>         number of map tasks
   -r, --reduces <num_reduces>   number of reduce tasks
 optional:
+  -C, --combiner                run the job's combine_fn on map output
   -h, --help                    show this message
 """
 
@@ -38,6 +39,7 @@ def main():
     p.add_argument("-j", "--job", required=True)
     p.add_argument("-m", "--maps", type=int, required=True)
     p.add_argument("-r", "--reduces", type=int, required=True)
+    p.add_argument("-C", "--combiner", action="store_true")
     p.add_argument("-h", "--help", action="store_true")
     try:
         a = p.parse_args()
@@ -50,14 +52,15 @@ def main():
 
     try:
         source = open(a.job).read()
-        check_job_source(source)
+        check_job_source(source, require_combiner=a.combiner)
     except (OSError, ValueError) as e:
         sys.exit(f"error: {e}")
 
     try:
         r = requests.post(f"{BOSS_URL}/submit_job", json={
             "input": a.input, "output": a.output, "job_source": source,
-            "num_maps": a.maps, "num_reduces": a.reduces}, timeout=30)
+            "num_maps": a.maps, "num_reduces": a.reduces,
+            "use_combiner": a.combiner}, timeout=30)
     except requests.RequestException as e:
         sys.exit(f"error: cannot reach boss at {BOSS_URL}: {e}")
     if r.status_code != 200:

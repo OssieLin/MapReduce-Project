@@ -50,10 +50,25 @@ def reduce_fn(key, values):    # values = iterable of all values for key
 ```
 Keys/values must be JSON-serializable.
 
+Optionally define `combine_fn(key, values)` (same signature as `reduce_fn`) and pass
+`-C` to `submit`: each map task pre-aggregates its own output before writing it.
+Its output values must be valid input to both `combine_fn` and `reduce_fn` (yield
+`(sum, count)`, not an average), and it may run zero, one or several times per key.
+In `examples/avg_temp.py`:
+```python
+def combine_fn(key, values):
+    total = count = 0
+    for s, c in values:
+        total += s; count += c
+    yield key, (total, count)
+```
+
 ## 6. Submit it
 ```bash
 python3 ./submit -i /input/weather -o /output/avg_temp -j examples/avg_temp.py -m 4 -r 2
 cat shared/output/avg_temp/part-*.jsonl
+# same job with the combiner (output is identical):
+python3 ./submit -i /input/weather -o /output/avg_temp_c -j examples/avg_temp.py -m 4 -r 2 -C
 ```
 | Flag | Required | Meaning |
 |---|---|---|
@@ -74,6 +89,12 @@ Expected output (one `[key, value]` per line, sorted by key within each file):
 ["Portland, OR", 8.0]
 ```
 (split across the `part-<r>.jsonl` files; a `_SUCCESS` file marks completion.)
+
+`curl -s localhost:5000/job/<id>` includes a `counters` object summed over finished
+tasks (`map_input_records`, `map_output_records`, `combine_input_records`,
+`combine_output_records`, `intermediate_bytes`, `shuffle_bytes`, `reduce_input_records`,
+`reduce_input_groups`, `reduce_output_records`, `skipped_rows`). The map-side
+combine buffer size is set by `COMBINE_BUFFER` on the workers (default 200000 pairs).
 
 `BOSS_URL` (default `http://localhost:5000`) and `SHARED_DIR` (default `./shared`)
 can be overridden by environment variables for the client tools.

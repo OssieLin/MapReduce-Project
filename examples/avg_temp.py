@@ -6,6 +6,16 @@ def map_fn(key, row):
     yield row["city"], (float(row["temp"]), 1)      # (sum, count)
 
 
+def combine_fn(key, values):
+    # Pre-sum on the map side. Yields (sum, count), not an average: averages
+    # are not associative, and the output must be valid reduce_fn input.
+    total, count = 0.0, 0
+    for s, c in values:
+        total += s
+        count += c
+    yield key, (total, count)
+
+
 def reduce_fn(key, values):
     total, count = 0.0, 0
     for s, c in values:

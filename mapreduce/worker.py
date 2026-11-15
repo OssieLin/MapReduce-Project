@@ -20,20 +20,48 @@ def _job(job_id):
     return _jobs[job_id]
 
 
+def _combine(combine_fn, pairs):
+    """Group pairs by key (as run_reduce does) and collapse each group."""
+    groups = {}
+    for k, v in pairs:
+        groups.setdefault(json.dumps(k, sort_keys=True), (k, []))[1].append(v)
+    return [kv for k, values in groups.values() for kv in combine_fn(k, iter(values))]
+
+
 def run_map(task):
     job = _job(task["job_id"])
     R, m = task["num_reduces"], task["index"]
+    combine_fn = getattr(job, "combine_fn", None) if task.get("use_combiner") else None
+    if not callable(combine_fn):
+        combine_fn = None
+    limit = int(os.environ.get("COMBINE_BUFFER", 200000))
     buffers = [[] for _ in range(R)]
-    stats = {}
+    stats = {"skipped_rows": 0, "map_input_records": 0, "map_output_records": 0}
+    buffered, flush_at = 0, limit
     for seg in task["split"]:
         for offset, row in common.iter_rows(seg, stats):
+            stats["map_input_records"] += 1
             for k, v in job.map_fn(offset, row):
                 buffers[common.partition(k, R)].append((k, v))
+                stats["map_output_records"] += 1
+                buffered += 1
+            if combine_fn and buffered >= flush_at:   # bound memory mid-split
+                buffers = [_combine(combine_fn, b) for b in buffers]
+                buffered = sum(map(len, buffers))
+                flush_at = buffered + limit           # no re-combine every row if keys are unique
+    if combine_fn:
+        buffers = [_combine(combine_fn, b) for b in buffers]
+        stats["combine_input_records"] = stats["map_output_records"]
+        stats["combine_output_records"] = sum(map(len, buffers))
     base = f"jobs/{task['job_id']}/intermediate"
+    nbytes = 0
     for r in range(R):
         with storage.atomic_open(f"{base}/map-{m}-part-{r}.jsonl") as f:
             for k, v in buffers[r]:
-                f.write(json.dumps([k, v]) + "\n")
+                line = json.dumps([k, v]) + "\n"
+                f.write(line)
+                nbytes += len(line.encode("utf-8"))
+    stats["intermediate_bytes"] = nbytes
     return stats
 
 
@@ -42,9 +70,12 @@ def run_reduce(task):
     r = task["index"]
     base = f"jobs/{task['job_id']}/intermediate"
     groups = {}
+    stats = {"shuffle_bytes": 0, "reduce_input_records": 0, "reduce_output_records": 0}
     for m in range(task["num_maps"]):
         with storage.open_read(f"{base}/map-{m}-part-{r}.jsonl") as f:
             for line in f:
+                stats["shuffle_bytes"] += len(line)
+                stats["reduce_input_records"] += 1
                 k, v = json.loads(line)
                 canon = json.dumps(k, sort_keys=True)
                 groups.setdefault(canon, (k, []))[1].append(v)
@@ -58,7 +89,9 @@ def run_reduce(task):
         for _, (k, values) in items:
             for ok, ov in job.reduce_fn(k, iter(values)):
                 f.write(json.dumps([ok, ov]) + "\n")
-    return {}
+                stats["reduce_output_records"] += 1
+    stats["reduce_input_groups"] = len(items)
+    return stats
 
 
 def main():
