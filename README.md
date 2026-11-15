@@ -1,4 +1,4 @@
-# MapReduce
+# Mini-MapReduce
 
 A small MapReduce system that runs on one VM with Docker Compose: one **boss**
 and four **workers** (1 CPU each). See `design.md` for the design.
@@ -90,6 +90,14 @@ Expected output (one `[key, value]` per line, sorted by key within each file):
 The lines are split across the `part-<r>.jsonl` files; `_SUCCESS` marks completion.
 **Use a new `-o` for every run** (or `rm -rf` the old one first): the boss does not
 check, and leftover `part-*` files from an earlier run would duplicate keys.
+
+
+And that's how you submit a job in this Mini-MapReduce! Feel free to read more of the following for customization and notes.
+
+
+---
+
+
 
 ## Inspecting a job
 ```bash
