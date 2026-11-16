@@ -183,6 +183,10 @@ def test_plots(name, tmp_path, shared):
          "start": 2, "end": 6, "status": "WON", "progress": 1.0},
         {"job": "jg", "task": "map-1", "attempt": "map-1.a0", "worker": "worker3", "backup": False,
          "start": 0, "end": None, "status": "RUNNING", "progress": 0.5},
+        {"job": "jg", "task": "reduce-0", "attempt": "reduce-0.a0", "worker": "worker4",
+         "backup": False, "start": 0.5, "end": 3, "status": "FAILED", "progress": 0.2},
+        {"job": "jg", "task": "reduce-0", "attempt": "reduce-0.a1", "worker": "worker1",
+         "backup": False, "start": 3.1, "end": 3.4, "status": "WON", "progress": 1.0},
     ]))
     a = args(tmp_path, "--all")
     os.makedirs(a.results)

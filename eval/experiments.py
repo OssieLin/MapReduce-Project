@@ -431,7 +431,7 @@ def exp_failures(args):
 
 
 # -------------------------------------------------------------------- plots
-BLUE, ORANGE = "#2a78d6", "#eb6834"              # validated categorical slots 1-2
+BLUE, ORANGE, AQUA = "#2a78d6", "#eb6834", "#1baf7a"   # validated categorical slots 1-3
 INK, MUTED, GRID, SURFACE = "#0b0b0b", "#52514e", "#e4e3df", "#fcfcfb"
 
 
@@ -744,30 +744,60 @@ def gantt(job_id, args, name, title):
     for line in open(path):
         e = json.loads(line)
         attempts[e["attempt"]] = e                   # last event per attempt wins
+    from matplotlib.lines import Line2D
     t0 = min(e["start"] for e in attempts.values())
     t_end = max(e["end"] or e["start"] for e in attempts.values())
+    span = t_end - t0
     workers = sorted({e["worker"] for e in attempts.values()})
-    fig, ax = plt.subplots(figsize=(9, 0.55 * len(workers) + 1.8))
+    fig, ax = plt.subplots(figsize=(9, 0.55 * len(workers) + 2.2))
+    by_task, tries = {}, {}
+    for e in attempts.values():
+        tries[e["task"]] = tries.get(e["task"], 0) + 1
     for e in attempts.values():
         y = workers.index(e["worker"])
         start, end = e["start"] - t0, (e["end"] or t_end) - t0
+        by_task.setdefault(e["task"], []).append((start, end, y, e))
         wasted = e["status"] in ("CANCELLED", "LOST", "FAILED")
-        color = ORANGE if e["backup"] else BLUE
+        rerun = not e["backup"] and not e["attempt"].endswith(".a0")
+        color = ORANGE if e["backup"] else AQUA if rerun else BLUE
         ax.barh(y, end - start, left=start, height=0.62, color=SURFACE if wasted else color,
                 edgecolor=color if wasted else SURFACE, linewidth=1.2 if wasted else 2,
                 hatch="///" if wasted else None)
-        if end - start > 0.09 * (t_end - t0):           # only where the label fits
-            ax.text(start + (end - start) / 2, y, e["attempt"], ha="center", va="center",
-                    fontsize=7, color=INK if wasted else "white")
+        # short task name (map-6 -> m6); the attempt number too for any repeated task
+        kind, num = e["task"].split("-")
+        label = kind[0] + num
+        if tries[e["task"]] > 1:
+            label += "." + e["attempt"].rsplit(".", 1)[1]
+        if end - start < 0.008 * span * len(label):           # doesn't fit
+            label = kind[0] + num if end - start > 0.03 * span else ""
+        ax.text(start + (end - start) / 2, y, label, ha="center", va="center",
+                fontsize=7, color=INK if wasted else "white")
+    # arrow from the attempt that lost the task to the attempt that took it over:
+    # a re-run starts when the failed attempt ends; a backup runs alongside the original
+    for runs in by_task.values():
+        runs.sort(key=lambda r: r[0])
+        for (p_start, p_end, p_y, _), (start, _, y, e) in zip(runs, runs[1:]):
+            if y == p_y:
+                continue
+            down = 1 if y > p_y else -1
+            ax.annotate("", xy=(start, y - 0.33 * down),
+                        xytext=(start if e["backup"] else p_end, p_y + 0.33 * down),
+                        arrowprops=dict(arrowstyle="-|>", color=MUTED, lw=1.1, ls="--",
+                                        shrinkA=0, shrinkB=0))
     ax.set_yticks(range(len(workers)), workers)
     ax.invert_yaxis()
     ax.grid(axis="y", visible=False)
-    ax.set_xlabel("Seconds since first attempt")
+    ax.set_xlabel("Seconds since first attempt  ·  m6 = map-6, r0 = reduce-0; "
+                  ".a0 = first attempt, .a1 = second")
     ax.set_title(title)
-    ax.legend(handles=[Patch(color=BLUE, label="attempt"), Patch(color=ORANGE, label="backup attempt"),
+    ax.legend(handles=[Patch(color=BLUE, label="attempt"),
+                       Patch(color=AQUA, label="re-run after a failure"),
+                       Patch(color=ORANGE, label="backup attempt"),
                        Patch(facecolor=SURFACE, edgecolor=MUTED, hatch="///",
-                             label="failed / cancelled / lost")],
-              frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.25), ncol=3)
+                             label="failed / cancelled / lost"),
+                       Line2D([], [], color=MUTED, lw=1.1, ls="--", marker=">", markersize=5,
+                              label="task taken over by another worker")],
+              frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.28), ncol=3)
     fig.tight_layout()
     _write(plt, fig, args, name)
 
