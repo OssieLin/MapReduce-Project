@@ -1,0 +1,6 @@
+config,trial,seconds,mb_per_s,intermediate_bytes,reexecutions,backups_launched,backups_won,wasted_seconds,matches,identical,job_id,victim
+none,1,1.466,7.516,7364450,0,0,0,0,True,True,7eb749a4,
+kill-map,1,12.472,0.883,7364450,1,0,0,0,True,True,6c5b24f7,worker2
+kill-reduce,1,11.337,0.972,7364450,1,0,0,0,True,True,b835a224,worker2
+pause,1,11.614,0.949,7364450,1,0,0,0,True,True,adb84680,worker3
+restart,1,1.756,6.274,7364450,1,0,0,0,True,True,103132d9,worker2

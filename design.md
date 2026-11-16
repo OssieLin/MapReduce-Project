@@ -217,7 +217,7 @@ Following the MapReduce paper (§3.6), a job submitted with `-B` may run a secon
 
 **Cancellation.** A heartbeat reply carries `cancel: true` for a `CANCELLED`/`LOST`/`FAILED` attempt. The worker sets an event that the task loop checks every 1000 records; it raises `TaskCancelled`, `atomic_open` deletes the temp file, and the worker goes straight back to `/get_task` without `task_done`.
 
-**Evaluation.** `docker-compose.straggler.yml` gives worker4 a quarter of a CPU. `eval/backup_experiment.sh` runs 3 trials of {no straggler, straggler} x {-B off, -B on} with `-m 16 -r 4`; `GET /job/<id>` reports `backups_launched`, `backups_won` and `wasted_seconds`, and `shared/jobs/<id>/events.jsonl` has one line per attempt start/finish for Gantt charts (`eval/plot_backup.py`).
+**Evaluation.** `docker-compose.straggler.yml` gives worker4 a quarter of a CPU. `eval/backup_experiment.sh` runs 3 trials of {no straggler, straggler} x {-B off, -B on} with `-m 16 -r 4`; `GET /job/<id>` reports `backups_launched`, `backups_won` and `wasted_seconds`, and `shared/jobs/<id>/events.jsonl` has one line per attempt start/finish for Gantt charts. `eval/experiments.py --straggler` runs 3 trials of {no straggler, straggler} x {-B off, -B on} with `-m 16 -r 4` and plots them.
 
 ## 9. Task Lifecycle
 
@@ -258,7 +258,7 @@ We test **correctness** and **performance** (latency and throughput).
 
 ## 12. Performance Evaluation
 
-All experiments run on the 4-CPU VM using a generated CSV dataset (millions of rows). Each configuration is run 3 times and we plot the mean with error bars. The boss logs timestamps (job submit, task start/end, job done) so plots are generated reproducibly by `eval/plot.py`.
+All experiments run on the 4-CPU VM using a generated CSV dataset (millions of rows). Each configuration is run 3 times and we plot the mean with error bars. The boss logs timestamps (job submit, task start/end, job done) so plots are generated reproducibly by `eval/experiments.py` (one flag per experiment below, `--all` for everything; `--plot-only` redraws from the saved CSVs).
 
 **Metrics:** *latency* = end-to-end job completion time; *throughput* = input MB processed per second.
 

@@ -1,0 +1,7 @@
+config,trial,seconds,mb_per_s,intermediate_bytes,reexecutions,backups_launched,backups_won,wasted_seconds,matches,identical,job_id,num_maps
+maps=1,1,2.56,4.304,7364450,0,0,0,0,True,True,3acb0808,1
+maps=2,1,1.698,6.489,7364450,0,0,0,0,True,True,6563faa0,2
+maps=4,1,1.23,8.958,7364450,0,0,0,0,True,True,578a9abc,4
+maps=8,1,1.385,7.955,7364450,0,0,0,0,True,True,3b7a0c25,8
+maps=16,1,1.326,8.309,7364450,0,0,0,0,True,True,2afd05f7,16
+maps=32,1,1.406,7.836,7364450,0,0,0,0,True,True,293d0880,32

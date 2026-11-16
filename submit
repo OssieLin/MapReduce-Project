@@ -10,7 +10,7 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mapreduce.common import check_job_source  # noqa: E402
 
-BOSS_URL = os.environ.get("BOSS_URL", "http://localhost:5000")
+BOSS_URL = os.environ.get("BOSS_URL", "http://localhost:5050")
 
 USAGE = """usage: ./submit -i <input_path> -o <output_path> -j <job_file.py>
                 -m <num_maps> -r <num_reduces> [-C] [-B]

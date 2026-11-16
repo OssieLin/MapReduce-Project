@@ -1,0 +1,11 @@
+config,trial,seconds,mb_per_s,intermediate_bytes,reexecutions,backups_launched,backups_won,wasted_seconds,matches,identical,job_id,victim
+normal,1,10.053,10.964,73681907,0,0,0,0,True,True,def92cc9,
+worker-killed,1,19.56,5.635,73681907,1,0,0,0,True,True,a0d5f4c0,worker2
+normal,2,9.728,11.33,73681907,0,0,0,0,True,True,252542e2,
+worker-killed,2,18.779,5.869,73681907,1,0,0,0,True,True,75094361,worker2
+normal,3,9.791,11.258,73681907,0,0,0,0,True,True,6bc50a13,
+worker-killed,3,19.022,5.794,73681907,1,0,0,0,True,True,c41d4f68,worker2
+normal,4,10.237,10.767,73681907,0,0,0,0,True,True,0e350d88,
+worker-killed,4,19.83,5.558,73681907,1,0,0,0,True,True,c6721929,worker2
+normal,5,9.924,11.107,73681907,0,0,0,0,True,True,03d48351,
+worker-killed,5,19.86,5.55,73681907,1,0,0,0,True,True,21d31f79,worker2

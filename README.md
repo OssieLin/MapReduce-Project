@@ -110,7 +110,7 @@ curl -s localhost:5050/workers   # each worker's status, last-seen age, current 
  
 ## Ports and storage
 By default the boss is published on host port **5050**, and `./submit` and
-`eval/backup_experiment.sh` connect to `http://localhost:5050`. Shared storage is the
+`eval/experiments.py` connect to `http://localhost:5050`. Shared storage is the
 repo's `shared/` folder. Override them with environment variables:
 
 ```bash
@@ -190,10 +190,43 @@ docker compose up -d          # back to 4 equal workers
 ```
   Switching compose setups recreates every container, including the boss, so earlier
   jobs are forgotten.
-- Experiment: `bash eval/backup_experiment.sh` runs 3 trials of {no straggler, straggler}
-  × {`-B` off, on} into `eval/results/backup.csv` (it needs `/input/big` uploaded; it
-  uses `BOSS_URL` if set, otherwise `http://localhost:5050`). `python3 eval/plot_backup.py [csv] [events.jsonl ...]` plots it
-  (needs matplotlib on the host).
+- Experiment: `python3 eval/experiments.py --straggler` (see [Experiments](#experiments)).
+
+## Experiments
+`eval/experiments.py` runs the evaluation from the host: it generates its own datasets
+under `shared/input/eval/`, drives the cluster (stopping, killing and pausing containers
+as needed), checks every run's output against a reference run, and writes
+`eval/results/<module>.csv` plus `<module>.png`. Pick modules by flag, or `--all`:
+
+| Flag | Experiment | Plot |
+|---|---|---|
+| `--baseline` | A. single-process Python (`eval/baseline.py`, 1 CPU) vs. MapReduce on 4 workers | runtime and throughput bars |
+| `--combiner` | B. combiner off/on, avg temp per city (100 keys) | runtime and intermediate-MB bars |
+| `--combiner-unique` | B2. same, avg temp per station (nearly unique keys: `examples/avg_temp_by_station.py`) | same |
+| `--scaling` | C. 1, 2, 3, 4 active workers | runtime and throughput vs. workers, with ideal lines |
+| `--fault` | D. normal vs. worker2 killed halfway through the map phase | runtime bars; byte-identical check |
+| `--granularity` | E. `num_maps` 1, 2, 4, 8, 16, 32 | runtime vs. num_maps |
+| `--straggler` | {no straggler, worker4 at 1/4 CPU} × {`-B` off, on} | grouped bars + Gantt of a backup run |
+| `--combiner-sweep` | combiner off/on on datasets with 10 … 1M distinct keys | intermediate MB and runtime vs. keys |
+| `--failures` | no failure / kill in map / kill in reduce / pause > timeout / kill + restart | runtime bars with re-runs + Gantt |
+
+```bash
+pip install -r eval/requirements.txt              # matplotlib, host only, for the plots
+python3 eval/experiments.py --all                 # everything: roughly an hour
+python3 eval/experiments.py --combiner --fault    # just some modules
+python3 eval/experiments.py --all --trials 1 --rows 300000 --sweep-rows 100000  # quick smoke run
+python3 eval/experiments.py --all --plot-only     # redraw plots from existing CSVs
+```
+Defaults: 3 trials, 3M rows (~110 MB), `-m 16 -r 4`. Generated data is seeded (same
+`--rows` → byte-identical files, regenerated only when the settings change) and reads like
+`Madison,2026-03-14,4.2,ST00012345`: `city,date,temp,station` with real city names
+(`"Portland, OR"` quoted), dates in 2026 and nearly unique station ids; datasets with more
+than 100 keys (the combiner sweep) use `City0000123` names. Inspect it with
+`head shared/input/eval/big/part0.csv`. Each module starts with an untimed
+warm-up job (fresh containers are slow on their first job). Output and intermediate
+files are deleted after each run; `shared/jobs/<id>/events.jsonl` is kept for the Gantt
+charts. `--straggler` recreates the containers (and so the boss) twice and leaves the
+normal 4-worker cluster running.
 ### Storage permissions
 - Containers run as root and set `umask(0)`, so the host user can normally delete files
   under `./shared`; if not, use `sudo rm`.
@@ -215,5 +248,5 @@ docker compose up -d          # back to 4 equal workers
 - `mapreduce/storage.py` – shared-storage helpers (atomic writes)
 - `upload_data`, `submit` – client CLIs
 - `docker-compose.straggler.yml` – override that slows worker4 down
-- `eval/` – backup-task experiment script and plots
+- `eval/` – `experiments.py` (all experiments and plots), `baseline.py` (single-process reference), `results/`
 - `tests/` – `python3 -m pytest -q` (combiner, failure handling, backups)

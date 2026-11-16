@@ -1,0 +1,3 @@
+config,trial,seconds,mb_per_s,intermediate_bytes,reexecutions,backups_launched,backups_won,wasted_seconds,matches,identical,job_id
+mapreduce,1,1.286,8.568,7364450,0,0,0,0,True,True,e1299feb
+single-process,1,1.277,8.628,0,0,0,0,0,True,True,

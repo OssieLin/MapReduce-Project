@@ -1,0 +1,5 @@
+config,trial,seconds,mb_per_s,intermediate_bytes,reexecutions,backups_launched,backups_won,wasted_seconds,matches,identical,job_id,straggler,backup
+straggler-no+backup-off,1,1.326,8.309,7364450,0,0,0,0,True,True,b0aecca7,False,False
+straggler-no+backup-on,1,1.397,7.887,7364450,0,0,0,0,True,True,39dfa700,False,True
+straggler-yes+backup-off,1,2.307,4.776,7364450,0,0,0,0,True,True,830a7add,True,False
+straggler-yes+backup-on,1,2.654,4.151,7364450,0,0,0,0,True,True,9405dc0d,True,True

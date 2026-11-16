@@ -29,7 +29,7 @@ class TaskCancelled(Exception):
 
 def _checkpoint(progress):
     """Publish progress for the heartbeat thread; abort if cancelled."""
-    _current["progress"] = round(progress, 4)
+    _current["progress"] = round(progress, 4) # round to 4 decimal places
     if _cancel.is_set():
         raise TaskCancelled()
 
@@ -43,13 +43,16 @@ def _heartbeat_loop():
             r = requests.post(f"{BOSS_URL}/heartbeat",
                               json={"worker_id": WORKER_ID, **cur},
                               timeout=HEARTBEAT_SECS)
+            # When requests makes a network call, it opens a socket. 
+            # Because waiting for a network response is incredibly slow compared to CPU speeds, 
+            # Python explicitly drops the GIL again the moment the network request goes out.
             if r.json().get("cancel"):
                 with _current_lock:
                     if _current is cur:     # still the attempt we asked about
                         _cancel.set()
         except (requests.RequestException, ValueError):
             pass                            # retry on the next tick
-        time.sleep(HEARTBEAT_SECS)
+        time.sleep(HEARTBEAT_SECS) # gets GIL after waking up (GIL is checking if any threads need it every 5ms)
 
 
 def _job(job_id):
@@ -62,6 +65,13 @@ def _job(job_id):
     return _jobs[job_id]
 
 
+def _group_key(k):
+    """Dict key that groups equal JSON keys: a str key stands for itself (the
+    common case, and cheap); anything else by its canonical JSON, tagged so it
+    can't collide with a str."""
+    return k if type(k) is str else ("json", json.dumps(k, sort_keys=True))
+
+
 def _combine(combine_fn, pairs):
     """
     Groups a list of (key, value) pairs by key, then runs the user's combine_fn.
@@ -70,7 +80,7 @@ def _combine(combine_fn, pairs):
     """
     groups = {}
     for k, v in pairs:
-        groups.setdefault(json.dumps(k, sort_keys=True), (k, []))[1].append(v) # retrieve a key's value if it exists
+        groups.setdefault(_group_key(k), (k, []))[1].append(v) # retrieve a key's value if it exists
         # or insert the key with specified value if the value is missing
         # group.setdefault(key_string, (key, value))
         # '{"city": "Madison"}': ( {"city": "Madison"}, [ {"sum": 40.0, "count": 1, "max": 40.0} ] )
@@ -99,6 +109,7 @@ def run_map(task):
     buffers = [[] for _ in range(R)]
     stats = {"skipped_rows": 0, "map_input_records": 0, "map_output_records": 0}
     buffered, flush_at = 0, limit
+    part_of = {}        # str key -> partition: keys repeat, and md5 + json per pair adds up
     split_bytes = sum(seg["end"] - seg["start"] for seg in task["split"]) or 1
     consumed = 0
 
@@ -115,7 +126,15 @@ def run_map(task):
 
             # Execute the user's map function
             for k, v in job.map_fn(offset, row):
-                buffers[common.partition(k, R)].append((k, v))
+                # only str keys are cached: 1, 1.0 and True are one dict key
+                # but serialize (and so partition) differently
+                if type(k) is str:
+                    p = part_of.get(k)
+                    if p is None:
+                        p = part_of[k] = common.partition(k, R)
+                else:
+                    p = common.partition(k, R)
+                buffers[p].append((k, v))
                 stats["map_output_records"] += 1
                 buffered += 1
 
@@ -138,10 +157,9 @@ def run_map(task):
     nbytes = 0
     for r in range(R):
         with storage.atomic_open(f"{base}/map-{m}-part-{r}.jsonl") as f:
-            for k, v in buffers[r]:
-                line = json.dumps([k, v]) + "\n"
-                f.write(line)
-                nbytes += len(line.encode("utf-8"))
+            lines = [json.dumps([k, v]) + "\n" for k, v in buffers[r]]
+            f.writelines(lines)
+            nbytes += sum(map(len, lines))      # json.dumps output is ASCII: chars == bytes
     stats["intermediate_bytes"] = nbytes
     return stats
 
@@ -173,15 +191,14 @@ def run_reduce(task):
                 if stats["reduce_input_records"] % CHECK_EVERY == 0:
                     _checkpoint(0.5 * m / M)
                 k, v = json.loads(line)
-                canon = json.dumps(k, sort_keys=True)
-                groups.setdefault(canon, (k, []))[1].append(v)
+                groups.setdefault(_group_key(k), (k, []))[1].append(v)
     items = list(groups.items())
 
     # Sort keys to guarantee deterministic output order
     try:
         items.sort(key=lambda kv: kv[1][0])
-    except TypeError:                       # mixed key types
-        items.sort(key=lambda kv: kv[0])
+    except TypeError:                       # mixed key types: canonical JSON order
+        items.sort(key=lambda kv: json.dumps(kv[1][0], sort_keys=True))
 
     # Write the final output to the user's requested output directory   
     out = f"{task['output'].rstrip('/')}/part-{r}.jsonl"
@@ -203,8 +220,19 @@ def main():
     global _current
     print(f"worker {WORKER_ID} -> {BOSS_URL}", flush=True)
     threading.Thread(target=_heartbeat_loop, daemon=True).start()
+
+    # -------------------------------------------------------------------------
+    # PHASE 0: Start Background Heartbeat
+    # -------------------------------------------------------------------------
+    # Start the daemon thread that constantly pings the Boss in the background.
+    # It reads from `_current` to tell the Boss what we are working on.
+
     while True:
+        # ---------------------------------------------------------------------
+        # PHASE 1: Ask for Work
+        # ---------------------------------------------------------------------
         try:
+            # Ask the Boss for a PENDING task (or a backup copy of a straggler)
             task = requests.post(f"{BOSS_URL}/get_task", json={"worker_id": WORKER_ID},
                                  timeout=10).json()["task"]
         except (requests.RequestException, ValueError, KeyError):
@@ -213,17 +241,39 @@ def main():
         if task is None:
             time.sleep(0.3)
             continue
+
         print(f"running {task['job_id']}/{task['task_id']}", flush=True)
+
+        # Build the dictionary we will eventually send to /task_done
         ids = {k: task.get(k) for k in ("job_id", "task_id", "attempt_id")}
         report = dict(ids, worker_id=WORKER_ID)
+
+        # ---------------------------------------------------------------------
+        # PHASE 2: Initialize Heartbeat State
+        # ---------------------------------------------------------------------
+        # Lock the shared memory so the heartbeat thread doesn't read it mid-update.
         with _current_lock:
+            # Tell the heartbeat thread exactly which attempt we are running
+            # and reset our progress to 0%.
             _current = dict(ids, progress=0.0)
+
+            # Reset the kill switch. If we just finished a cancelled task, 
+            # we need to clear the flag so this new task is allowed to run.
             _cancel.clear()
+
+        # ---------------------------------------------------------------------
+        # PHASE 3: Execution & Preemption Handling
+        # ---------------------------------------------------------------------
         try:
+            # Run the actual map or reduce logic. 
+            # Deep inside these functions, `_checkpoint(progress)` is called repeatedly.
             stats = run_map(task) if task["type"] == "map" else run_reduce(task)
             report.update(success=True, stats=stats)
         except TaskCancelled:
             # another attempt won; atomic_open already removed our temp file
+            # If the heartbeat thread saw `cancel: True` from the Boss, it flipped
+            # the `_cancel` flag. The next time the map/reduce function called 
+            # `_checkpoint()`, it raised a TaskCancelled exception, aborting the work.
             print(f"cancelled {task['job_id']}/{task.get('attempt_id')}", flush=True)
             with _current_lock:
                 _current = {}
@@ -231,8 +281,17 @@ def main():
         except Exception:
             report.update(success=False, error=traceback.format_exc(limit=5))
             print(report["error"], flush=True)
+
+
+        # ---------------------------------------------------------------------
+        # PHASE 4: Cleanup & Reporting
+        # ---------------------------------------------------------------------
+        # We finished normally (success or user crash). Clear the heartbeat tracker 
+        # so the background thread stops telling the Boss we are working on this.
         with _current_lock:
             _current = {}
+
+        # Send the final results to the Boss. Retry up to 5 times if network fails.
         for _ in range(5):
             try:
                 requests.post(f"{BOSS_URL}/task_done", json=report, timeout=10)

@@ -105,9 +105,15 @@ def _log_event(job, task, a):
 
 
 def _start_attempt(job, task, worker, backup=False):
+    """
+    Generate a unique 'attempt_id' (e.g., map-0.a0, map-0.a1). We append this to the task's attempt list.
+    This allows the Boss to track the history of exactly who tried this task, 
+    when they started, and whether this specific attempt is a 'backup' copy.
+    """
     a = {"attempt_id": f"{task['task_id']}.a{len(task['attempts'])}", "worker": worker,
          "started": now(), "last_heartbeat": None, "progress": None, "backup": backup,
          "status": "RUNNING", "finished": None}
+
     task["attempts"].append(a)
     task.update(state="RUNNING", worker=worker, started=a["started"], finished=None)
     workers[worker]["task"] = (job["id"], a["attempt_id"])
@@ -136,18 +142,25 @@ def _active_tasks(job):
 
 
 def check_timeouts(now):
-    """Fail RUNNING attempts whose worker has been silent > HEARTBEAT_TIMEOUT.
-    Caller holds `lock`. Returns [(job_id, task_id, worker_id)] that timed out."""
+    """
+    Runs in a background thread every 1 second. It loops over all RUNNING attempts.
+    If 'now - last_seen > HEARTBEAT_TIMEOUT' (default 10s), the worker is declared dead.
+    """
     reset = []
     for job in jobs.values():
         for t in _active_tasks(job):
             for a in _running(t):
                 w = workers.get(a["worker"])
+
                 # max() covers a worker that dies before its first heartbeat
+                # Calculate time since last heartbeat
                 silent = now - max(a["started"], w["last_seen"] if w else 0)
+
                 if silent > HEARTBEAT_TIMEOUT:
                     if w:
                         w["status"] = "failed"
+                    # _end_attempt contains logic to flip the overall task state 
+                    # back to 'PENDING' so another healthy worker can pick it up!
                     _end_attempt(job, t, a, "FAILED")
                     print(f"worker {a['worker']} failed: no heartbeat for {silent:.1f} s; "
                           f"{a['attempt_id']} of job {job['id']} -> {t['state']}", flush=True)
@@ -182,19 +195,25 @@ def _estimate(a, now):
 
 
 def pick_backup(tasks, worker_id, now, cfg, launched=0, total=None):
-    """Return the RUNNING task of this phase most worth a speculative copy on
-    worker_id, or None. `launched`/`total` are the job's backups so far and its
-    task count, for the cap. Pure: reads task dicts only."""
+    """
+    Return the RUNNING task of this phase that needs to hand off its work to other worker on
+    worker_id, or None,the most because of stragglin. `launched`/`total` are the job's backups so far and its
+    task count, for the cap. Pure: reads task dicts only.
+    """
     if not tasks or any(t["state"] == "PENDING" for t in tasks):
-        return None
-    total = len(tasks) if total is None else total
+        return None # don't choose a backup if the task hasn't started yet
+
+    total = len(tasks) if total is None else total # total number of tasks in this job
+
     if launched >= max(1, math.ceil(cfg["max_fraction"] * total)):
-        return None
+        return None # hit the maximum of backup tasks
+
+
     median = _phase_median(tasks)
     done = sum(t["state"] == "DONE" for t in tasks)
     if median is None or done < cfg["min_done"] * len(tasks):
         return None
-    best, best_est = None, -1.0
+    best, best_est = None, -1.0 # actual dictionary of the taks and the estimated time
     for t in tasks:
         running = _running(t)
         if (t["state"] != "RUNNING" or len(running) != 1
@@ -202,6 +221,14 @@ def pick_backup(tasks, worker_id, now, cfg, launched=0, total=None):
             continue
         a = running[0]
         elapsed, _, est = _estimate(a, now)
+
+
+        # STRAGGLER CONDITIONS:
+        # 1. Has it been running 1.5x longer than the median task? (cfg["slowdown"])
+        # 2. Is its estimated time remaining (est) STILL longer than a median task?
+        # 3. is the estimated tim remaining still larger than the median 
+        # 4. Is the esimated worse than than any straggler
+        # If yes, a fresh worker starting from 0% could finish it faster than this slow worker.
         if (a["worker"] != worker_id
                 and elapsed > cfg["slowdown"] * median
                 and elapsed > cfg["min_seconds"]
@@ -261,8 +288,10 @@ def submit_job():
 def get_task():
     """
     Endpoint for workers to request work.
-    Scans active jobs for PENDING tasks and assigns the first one found.
-    With none left, a -B job may get a backup copy of a straggling task.
+
+    If no PENDING tasks are left, the Boss checks if it should spawn a backup.
+    If pick_backup returns a slow task, it assigns that SAME task to this new worker, 
+    but with backup=True. Now two workers are running the same byte-split.
     """
     worker = (request.get_json(force=True) or {}).get("worker_id", "?")
     with lock:
@@ -306,9 +335,17 @@ def task_done():
     Also handles phase transitions (MAP -> REDUCE -> DONE).
     """
     d = request.get_json(force=True)
+# d now equals {"worker_id": "worker-1", "job_id": "abc", "task_id": "map-0", "success": True, "stats": {...}}
+
     worker = d.get("worker_id", "?")
     finished = False
+
+    """
+    Worker A and Worker B are running "map-0". Worker B finishes first and calls task_done.
+    """
     with lock:
+        # 1. Idempotency Guard: If the overall task is already DONE, ignore this callback.
+        # This happens when the slow worker finally finishes and reports back late.
         _touch(worker)
         job = jobs.get(d.get("job_id"))
         if job is None:
@@ -353,12 +390,14 @@ def task_done():
             _end_attempt(job, task, other, "CANCELLED")
 
         # BARRIER 1: If in MAP phase, check if ALL map tasks are now DONE
+        # MAP -> REDUCE
         if job["status"] == "MAP" and all(t["state"] == "DONE" for t in job["map_tasks"]):
             job["reduce_tasks"] = [_new_task(job["id"], "reduce", r)
                                    for r in range(job["num_reduces"])]
             job["status"] = "REDUCE"
 
         # BARRIER 2: If in REDUCE phase, check if ALL reduce tasks are now DONE
+        # REDUCE -> DONE
         elif job["status"] == "REDUCE" and all(t["state"] == "DONE" for t in job["reduce_tasks"]):
             storage.write_atomic(f"{job['output'].rstrip('/')}/_SUCCESS", "")
             job.update(status="DONE", finished=now())
@@ -372,8 +411,14 @@ def task_done():
 
 @app.post("/heartbeat")
 def heartbeat():
-    """Workers call this every HEARTBEAT_SECS, busy or idle. The reply tells a
-    worker to abandon an attempt that lost, was cancelled or timed out."""
+    """
+    Workers hit this endpoint constantly.
+    1. It updates `_touch(worker)` which records 'last_seen = now()'.
+    2. It updates the specific attempt's 'progress' (e.g., 0.45 for 45% done).
+    3. Crucially, if the Boss previously cancelled this attempt (because a faster 
+       backup worker won the race), it returns 'cancel: True' to tell this worker to stop.
+    """
+
     d = request.get_json(force=True) or {}
     worker = d.get("worker_id", "?")
     cancel = False
@@ -388,6 +433,7 @@ def heartbeat():
                 a["last_heartbeat"] = now()
                 if d.get("progress") is not None:
                     a["progress"] = min(max(float(d["progress"]), 0.0), 1.0)
+            # Tell the worker to abort if it lost the race or the job failed
             cancel = a["status"] in ("CANCELLED", "LOST", "FAILED") or job["status"] == "FAILED"
     return jsonify({"ok": True, "cancel": cancel})
 
@@ -456,4 +502,4 @@ def job_status(job_id):
 if __name__ == "__main__":
     storage.prepare_root()
     threading.Thread(target=_monitor, daemon=True).start()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5050)), threaded=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), threaded=True)

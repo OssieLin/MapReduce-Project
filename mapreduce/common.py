@@ -81,10 +81,13 @@ def iter_rows(seg, stats=None):
             text = line.decode("utf-8").rstrip("\r\n")
             if not text.strip():
                 continue
-            try:
-                fields = next(csv.reader([text]))
-            except (csv.Error, StopIteration):
-                fields = None
+            if '"' in text or "\r" in text or "\x00" in text:
+                try:
+                    fields = next(csv.reader([text]))
+                except (csv.Error, StopIteration):
+                    fields = None
+            else:                   # no quoting: identical to csv.reader, ~5x cheaper
+                fields = text.split(",")
             if fields is None or len(fields) != len(cols):
                 if stats is not None:
                     stats["skipped_rows"] = stats.get("skipped_rows", 0) + 1
