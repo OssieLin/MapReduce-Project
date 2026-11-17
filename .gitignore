@@ -2,3 +2,4 @@ shared/
 __pycache__/
 *.pyc
 venv/
+examples/data/weather_1m/

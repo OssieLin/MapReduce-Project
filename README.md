@@ -13,7 +13,8 @@ and four **workers** (1 CPU each). See `design.md` for the design.
   workers compete for CPU time and runtimes become slower and noisy.
 
 
-Follow steps 0 to 6 to submit a MapReduce job.
+Follow steps 0 to 6 to submit a MapReduce job, then step 7 to monitor it. Step 8
+tries the combiner, worker failures and backup tasks on a 1M-row dataset.
 
 
 ## 0. Setup
@@ -24,19 +25,8 @@ Clone the repo **on that machine**; steps 1–6 all run there:
 git clone https://github.com/OssieLin/Mini-MapReduce.git
 cd Mini-MapReduce
 ```
-That one clone is all you need.
-
-**Optional: use your laptop too.** The boss only listens on the VM's localhost,
-so first forward its port over SSH (leave this running):
-```bash
-ssh -N -L 5050:localhost:5050 <user>@<vm>
-```
-- **Watch jobs:** open http://localhost:5050/visualization in the laptop's
-  browser. No clone needed.
-- **Submit jobs:** this needs a second clone on the laptop, plus step 2 there,
-  because `./submit` reads the job file locally. Input data must already be on
-  the VM (`./upload_data` copies into the local `./shared`, so always run it on
-  the VM), and output appears in the VM's `./shared/output`.
+That one clone is all you need. To also watch or submit from your laptop, see
+[Watching from your laptop](#watching-from-your-laptop) in step 7.
 
 ## 1. What to build
 ```bash
@@ -55,7 +45,6 @@ pip install -r requirements.txt
 ## 3. How to start the cluster
 ```bash
 docker compose up -d          # boss on localhost:5050, worker1..worker4
-docker compose logs -f        # optional
 ```
 Shared storage is `./shared` on the host, `/shared` in every container.
 To use a different port or storage folder, see [Ports and storage](#ports-and-storage).
@@ -124,25 +113,116 @@ The lines are split across the `part-<r>.jsonl` files; `_SUCCESS` marks completi
 check, and leftover `part-*` files from an earlier run would duplicate keys.
 
 
-## 7. View the visualization
-Open **http://localhost:5050/visualization** in a browser while the cluster is running
-(use your own port if you changed it; see [Ports and storage](#ports-and-storage)).
-It shows the current job live, from the boss splitting the input through map, the
-intermediate files, reduce and the output files on disk, with each worker's partitions.
-Press **Play** on a finished job to replay it from 0 s. The **Counters**, **Combiner** and
-**Previous jobs** buttons under the title open details below the workflow; "How to read this
-diagram" explains P, R and the other symbols. Without a cluster, open
-http://localhost:5050/visualization?demo=1 (or the file visualization/index.html with
-?demo=1) to see sample data.
+## Advanced features usage
+Each feature below is run on the same 1M-row dataset, so the difference shows up in the
+visualization at http://localhost:5050/visualization (open it before you submit; from
+a laptop, see [Watching from your laptop](#watching-from-your-laptop)). All commands
+run on the VM in the repo folder, with the cluster from step 3 running.
 
-And that's how you submit a job in this Mini-MapReduce! Feel free to read more of the following for customization and notes.
+**Get the example data** (once). The 1M-row dataset is generated rather than committed
+(about 37 MB in 4 CSV files, git-ignored). It uses the same generator and seed as the
+benchmark, so every run gives the same files. Columns are `city,date,temp,station`, with 100 cities:
+```bash
+python3 examples/data/make_weather_1m.py                    # -> examples/data/weather_1m/
+./upload_data -f examples/data/weather_1m/ -d /input/weather_1m
+```
+Each `./submit` below needs a new `-o`; to rerun a block, delete its outputs first
+(`rm -rf shared/output/adv_*`).
+
+### Combiner (`-C`)
+Run the same job without and with the combiner:
+```bash
+./submit -i /input/weather_1m -o /output/adv_nocomb -j examples/avg_temp.py -m 16 -r 4
+./submit -i /input/weather_1m -o /output/adv_comb   -j examples/avg_temp.py -m 16 -r 4 -C
+```
+In the visualization, select either job and press **Combiner**. It compares the two
+runs (same input, M and R). Without `-C`, every one of the 1M map records is written
+and shuffled. With `-C`, each map task writes just one record per city (100), so
+intermediate and shuffle bytes drop from tens of MB to tens of KB, and the job is
+faster. The output keys and averages are the same.
+
+### Worker failure (kill a worker by hand)
+`examples/avg_temp_slow.py` is `avg_temp.py` with a short sleep per row, so its map
+phase lasts about half a minute: long enough to kill a worker in the middle of it.
+Use two terminals on the VM.
+
+Terminal 1, first a reference run, then the run you will break:
+```bash
+./submit -i /input/weather_1m -o /output/adv_ref  -j examples/avg_temp_slow.py -m 16 -r 4
+./submit -i /input/weather_1m -o /output/adv_kill -j examples/avg_temp_slow.py -m 16 -r 4
+```
+Terminal 2, while the second job's map phase is running (a few map tasks DONE in the
+visualization):
+```bash
+docker compose kill worker2     # SIGKILL: no clean exit, its heartbeats just stop
+# watch the visualization for ~10 s, then bring it back:
+docker compose start worker2
+```
+**What to see:** for about 10 s (`HEARTBEAT_TIMEOUT`) nothing changes, because the boss
+can't yet tell a dead worker from a slow one. Then worker2's running map attempt turns
+into a *failed / lost* chip, its task goes back to PENDING, and another worker reruns it.
+The job still finishes, about 10 s later than the reference run, and
+`curl -s localhost:5050/job/<id>` shows the extra attempt under `reexecutions`. The
+output is the same as the reference:
+```bash
+diff <(cat shared/output/adv_ref/part-*.jsonl) <(cat shared/output/adv_kill/part-*.jsonl) && echo identical
+```
+Variations:
+- **Pause instead of kill** (a worker wrongly presumed dead):
+  `docker compose pause worker3`, wait ~15 s, then `docker compose unpause worker3`.
+  Its task is rerun elsewhere, and its late report doesn't break the job.
+- **Kill during reduce:** kill a worker once the job shows REDUCE. That phase is
+  short, so use more reduce tasks (`-r 8`) for a longer window.
+- **Kill every worker:** the job waits. `docker compose up -d` brings them back and
+  it resumes.
+
+### Straggler and backup tasks (`-B`)
+Make worker4 slow: a quarter of a CPU, plus a 0.1 ms sleep per input row:
+```bash
+SLOW_MS_PER_ROW=0.1 docker compose -f docker-compose.yml -f docker-compose.straggler.yml up -d
+```
+This recreates every container, including the boss, so the visualization's earlier
+jobs are forgotten (output files stay). Then run the same job without and with backups:
+```bash
+./submit -i /input/weather_1m -o /output/adv_strag   -j examples/avg_temp.py -m 16 -r 4
+./submit -i /input/weather_1m -o /output/adv_backup -j examples/avg_temp.py -m 16 -r 4 -B
+docker compose logs boss | grep -i backup    # which tasks got a backup, and who won
+```
+**What to see:** without `-B`, the other three workers finish their maps in a couple
+of seconds and then sit idle while worker4 grinds through its task. The job ends
+many seconds later. With `-B`, once the other tasks are done, an idle worker gets a copy
+of worker4's task, marked **backup**. The backup finishes first, worker4's copy turns
+into a *cancelled* chip, and the job ends much sooner. `curl -s localhost:5050/job/<id>`
+shows `backups_launched`, `backups_won` and `wasted_seconds`. Both runs give the same output:
+```bash
+diff <(cat shared/output/adv_strag/part-*.jsonl) <(cat shared/output/adv_backup/part-*.jsonl) && echo identical
+```
+Afterwards, go back to 4 equal workers (this also recreates the boss):
+```bash
+docker compose up -d
+```
+
+And that's how you submit and monitor a job in this Mini-MapReduce! Feel free to read
+more of the following for customization and notes.
 
 
 ---
 
 
+## Job monitoring
+These views are most useful once a job from step 6 is running or finished. All
+commands below run on the VM unless a heading says otherwise.
 
-## Inspecting a job
+### Logs
+```bash
+docker compose logs -f | grep -v -E '/get_task|/heartbeat'
+```
+Idle workers ask the boss for work about three times a second, so the raw
+`docker compose logs -f` is mostly `POST /get_task ... 200` lines; that is normal.
+The filter above hides them. During a job, workers print `running <job_id>/<task_id>`,
+and any traceback shows up here too.
+
+### Inspecting a job
 ```bash
 curl -s localhost:5050/job/<id>  # status, per-task attempts, counters, backup stats
 curl -s localhost:5050/workers   # each worker's status, last-seen age, current task
@@ -150,6 +230,36 @@ curl -s localhost:5050/workers   # each worker's status, last-seen age, current 
 `counters` is summed over finished tasks: `map_input_records`, `map_output_records`,
 `combine_input_records`, `combine_output_records`, `intermediate_bytes`, `shuffle_bytes`,
 `reduce_input_records`, `reduce_input_groups`, `reduce_output_records`, `skipped_rows`.
+
+### Watching from your laptop
+The cluster must already be running on the VM (step 3), and
+`curl -s localhost:5050/workers` there should print JSON. The boss only listens on
+the VM's localhost, so forward its port over SSH from the laptop (leave this running):
+```bash
+ssh -N -L 5050:localhost:5050 <user>@<vm>
+```
+The second `5050` is the boss's host port on the VM. If you changed it (see
+[Ports and storage](#ports-and-storage)), use that number instead.
+- **Watch jobs:** open http://localhost:5050/visualization in the laptop's
+  browser. No clone needed. The `curl` commands above also work from the laptop.
+- **Submit jobs:** this needs a second clone on the laptop, plus step 2 there,
+  because `./submit` reads the job file locally. Input data must already be on
+  the VM (`./upload_data` copies into the local `./shared`, so always run it on
+  the VM), and output appears in the VM's `./shared/output`.
+
+If `ssh` prints `bind [127.0.0.1]:5050: Address already in use`, something on the
+laptop (usually an earlier tunnel) already holds port 5050. Stop it, or pick another
+local port, then use that port in the laptop's URLs and in `BOSS_URL`:
+```bash
+lsof -nP -iTCP:5050 -sTCP:LISTEN     # shows the PID holding the port
+kill <PID>                           # if it's an old ssh tunnel
+# or forward a different local port instead:
+ssh -N -L 5051:localhost:5050 <user>@<vm>   # then http://localhost:5051/visualization
+```
+If browsing gives `channel N: open failed: connect failed: Connection refused`, the
+tunnel is fine, but nothing listens on that port on the VM. Check `docker compose ps -a`
+on the VM (see [Debug](#debug)).
+
  
 ## Ports and storage
 By default the boss is published on host port **5050**, and `./submit` and
@@ -224,15 +334,8 @@ Both sides must agree:
 - `GET /job/<id>` adds `backups_launched`, `backups_won`, `wasted_seconds` and per-attempt
   detail; every attempt start and finish is appended to `shared/jobs/<id>/events.jsonl`.
 - Try it by making worker4 a straggler (a quarter of a CPU; `SLOW_MS_PER_ROW=<ms>` also
-  adds a sleep per input row on worker4):
-```bash
-docker compose -f docker-compose.yml -f docker-compose.straggler.yml up -d
-./submit -i /input/big -o /output/b -j examples/avg_temp.py -m 16 -r 4 -B
-docker compose logs boss | grep backup
-docker compose up -d          # back to 4 equal workers
-```
-  Switching compose setups recreates every container, including the boss, so earlier
-  jobs are forgotten.
+  adds a sleep per input row on worker4): see
+  [Straggler and backup tasks](#straggler-and-backup-tasks--b) in step 8.
 - Experiment: `python3 eval/experiments.py --straggler` (see [Experiments](#experiments)).
 
 ## Benchmark
@@ -290,6 +393,8 @@ normal 4-worker cluster running.
 | `submit` fails with a JSON or `403` error | `curl -i http://localhost:5050/job/x` should return `{"error": "unknown job"}` | `BOSS_URL` points at something else: `unset BOSS_URL`, or set it to the boss's port (see [Ports and storage](#ports-and-storage)) |
 | `service "boss" is not running` | `docker compose ps -a` shows boss as `Created` | Host port 5050 is taken: pick another port as in [Ports and storage](#ports-and-storage) |
 | `cannot reach boss` | `docker compose ps` | `docker compose up -d` |
+| `bind [127.0.0.1]:5050: Address already in use` (laptop `ssh -L`) | `lsof -nP -iTCP:5050 -sTCP:LISTEN` on the laptop | Kill the old tunnel, or forward another local port, e.g. `-L 5051:localhost:5050` |
+| `channel N: open failed: connect failed: Connection refused` (laptop `ssh -L`) | On the VM: `docker compose ps -a`, `docker compose port boss 5000` | Start the cluster, or forward the port the boss is actually published on |
 | `zsh: no matches found: shared/output/.../part-*.jsonl` | the job never finished | Read `submit`'s error message |
 | Duplicate keys in `cat part-*.jsonl` | `ls shared/output/<name>` shows more `part-*` files than `-r` | The output directory was reused; delete it or pick a new `-o` |
 | Job paused at `maps k/M` after a worker died | `docker compose logs boss \| grep failed`, `curl -s localhost:5050/workers` | Expected: the task returns to PENDING after `HEARTBEAT_TIMEOUT` (10 s) and is rerun |
