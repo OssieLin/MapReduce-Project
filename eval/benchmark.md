@@ -15,8 +15,8 @@ are the mean, whiskers ±1 standard deviation.
 The four vCPUs are equal, so four 1-CPU worker containers really run side by side
 at the same speed. That is what these experiments assume.
 
-> **Why not a Mac?** The same benchmark on a MacBook Air M2 gave unreliable numbers.
-> The M2 has 4 fast and 4 slow (efficiency) cores, throttles when warm (it has no fan),
+> **Why not a Mac?** The same benchmark on a MacBook would give unreliable numbers.
+> The M-series chip has fast and slow (efficiency) cores, throttles when warm,
 > and runs Docker inside a VM shared with everything else on the laptop. The same
 > 3M-row job took anywhere from 7.5 s to 20 s there, vs. 6.2–6.5 s on this VM. For
 > results that reflect 4 parallel workers, use a machine with at least 4 equal,

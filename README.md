@@ -200,8 +200,7 @@ workers, 3M rows ≈ 110 MB, 16 map / 4 reduce tasks, 5 trials each). Tested:
 - **worker failures:** kills in each phase, a pause past the timeout, and a quick restart;
 - **backup tasks** against a slow worker (36.6 s → 11.0 s).
 
-All 175 runs produced the correct output. See **[eval/benchmark.md](eval/benchmark.md)**
-for the machine, the setup, every plot with its interpretation, and how to run your
+See **[eval/benchmark.md](eval/benchmark.md)** for the machine, the setup, every plot with its interpretation, and how to run your
 own variations.
 
 ## Experiments
