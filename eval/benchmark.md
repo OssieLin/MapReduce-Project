@@ -27,10 +27,8 @@ at the same speed. That is what these experiments assume.
 
 - **Cluster:** one boss and 4 workers (`worker1`–`worker4`), each a Docker container
   limited to 1 CPU (`cpus: "1"`), sharing `./shared` as storage.
-- **Data:** a generated, seeded dataset of **3,000,000 rows (≈110 MB)** in 4 CSV files,
-  rows like `Madison,2026-03-14,4.2,ST00012345` (`city,date,temp,station`): 100 cities,
-  nearly unique station ids. The combiner sweep uses separate 1M-row datasets with 10 to
-  1,000,000 distinct keys.
+- **Data:** a generated 3,000,000-row (≈110 MB) weather dataset, plus four 1M-row
+  datasets for the combiner sweep. See [Data](#data) below.
 - **Job:** average temperature per city (`examples/avg_temp.py`, 100 keys). The
   "unique keys" control uses average temperature per station
   (`examples/avg_temp_by_station.py`).
@@ -46,6 +44,45 @@ at the same speed. That is what these experiments assume.
   SLOW_MS_PER_ROW=0.05 python3 eval/experiments.py --straggler --rows 3000000 --trials 5 \
     --results eval/results/vm-3M
   ```
+
+### Data
+
+The script generates its input itself (`dataset()` in `eval/experiments.py`), so
+nothing has to be downloaded or uploaded. Each dataset is 4 CSV files plus a
+`_meta.json`, stored in the cluster's shared folder, which the boss and workers see as
+`/input/eval/<name>`:
+
+| Folder | Rows | Distinct cities (keys) | Used by |
+|---|---|---|---|
+| `shared/input/eval/big/` | 3,000,000 (`--rows`) | 100 | every experiment except the combiner sweep |
+| `shared/input/eval/keys10/` | 1,000,000 (`--sweep-rows`) | 10 | combiner sweep |
+| `shared/input/eval/keys1000/` | 1,000,000 | 1,000 | combiner sweep |
+| `shared/input/eval/keys100000/` | 1,000,000 | 100,000 | combiner sweep |
+| `shared/input/eval/keys1000000/` | 1,000,000 | 1,000,000 | combiner sweep |
+
+```
+city,date,temp,station
+Chicago,2026-12-15,-10.8,ST18017734
+"Springfield, IL",2026-05-17,15.9,ST25789893
+```
+
+How each row is made:
+
+- **`city`:** one of `keys` cities, picked uniformly at random. Up to 100 keys these are
+  real city names. Names containing a comma are quoted, as in `"Springfield, IL"`. Above
+  100 keys the names are synthetic (`City0000123`).
+- **`date`:** a random day in 2026.
+- **`temp`:** the city's own typical temperature (drawn once per city, −10 to 25 °C)
+  plus Gaussian noise (σ = 6), rounded to 0.1.
+- **`station`:** a random id `ST########` out of 10 × rows possible values, so nearly
+  unique. This is the key of the "unique keys" combiner control.
+- **Files:** rows are split evenly over `part0.csv` … `part3.csv`, each with a header.
+
+The generator always uses seed 42, so the same settings give byte-identical files on
+any machine. `_meta.json` records the settings (rows, keys, files, seed, format). A
+later run reuses the folder when they match and regenerates it when they differ
+(e.g. a new `--rows`). The files live only in `shared/` and are not committed to git.
+Any run with the same flags recreates them. To inspect: `head shared/input/eval/big/part0.csv`.
 
 ## Results
 

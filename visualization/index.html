@@ -1,0 +1,679 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mini-MapReduce Workflow Visualization</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+/* Layout: top bar (centered title, theme switch at right) + detail tabs; job strip; key; workflow (always visible); detail panel opens below it. */
+:root {
+  --bg: #f4f6f9; --surface: #ffffff; --fg: #161a21; --muted: #5b6372; --faint: #98a0ad; --line: #e1e5eb;
+  --boss: #485468;  --boss-bg: #eceff4;
+  --map: #2d6bd6;   --map-bg: #e7effc;
+  --mid: #b97a08;   --mid-bg: #fbf1dc;
+  --red: #17915f;   --red-bg: #e1f4ea;
+  --disk: #7246d0;  --disk-bg: #eee8fb;
+  --bad: #c73b36;
+  --font-head: "Space Grotesk", "Inter", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f1217; --surface: #171b22; --fg: #e7eaef; --muted: #9ca4b1; --faint: #6b7380; --line: #272d36;
+  --boss: #aab4c6; --boss-bg: #20252f; --map: #6ea2ff; --map-bg: #15233c; --mid: #efb344; --mid-bg: #30240d;
+  --red: #46c792; --red-bg: #0f2a1f; --disk: #a98cf6; --disk-bg: #221a38; --bad: #f06c66; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0f1217; --surface: #171b22; --fg: #e7eaef; --muted: #9ca4b1; --faint: #6b7380; --line: #272d36;
+  --boss: #aab4c6; --boss-bg: #20252f; --map: #6ea2ff; --map-bg: #15233c; --mid: #efb344; --mid-bg: #30240d;
+  --red: #46c792; --red-bg: #0f2a1f; --disk: #a98cf6; --disk-bg: #221a38; --bad: #f06c66; color-scheme: dark }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font: 14px/1.5 var(--font-body); }
+.wrap { max-width: 1440px; margin: 0 auto; padding-block: 20px 40px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1 { font: 600 24px/1.2 var(--font-head); text-align: center; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+.top { display: grid; grid-template-columns: 34px minmax(0, 1fr) 34px; align-items: center; gap: 12px; margin: 4px 0 10px; }
+.theme { justify-self: end; display: inline-grid; place-items: center; width: 34px; height: 34px; padding: 0;
+  border: 1px solid var(--line); background: var(--surface); border-radius: 50%; color: var(--muted); }
+.theme:hover { border-color: var(--muted); color: var(--fg); }
+.theme svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; }
+.tabs { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.tab { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--surface);
+  border-radius: 999px; padding: 6px 14px; font-size: 13px; color: var(--muted); }
+.tab:hover { border-color: var(--muted); color: var(--fg); }
+.tab[aria-expanded="true"] { background: var(--fg); border-color: var(--fg); color: var(--bg); font-weight: 600; }
+
+h2 { font: 600 12px/1 var(--font-body); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 12px; }
+.mono, .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+button { font: inherit; color: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--map); outline-offset: 2px; }
+
+/* job strip */
+.job { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 22px; padding: 10px 16px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px; font-size: 13px; }
+.job span { color: var(--muted); white-space: nowrap; }
+.job b { color: var(--fg); font: 500 13px var(--font-mono); }
+.viewing { text-align: center; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.viewing:empty { display: none; }
+.conn { text-align: center; font-size: 12px; color: var(--bad); margin: -6px 0 10px; }
+.viewing button { border: 0; background: none; color: var(--map); text-decoration: underline; padding: 0; }
+
+/* controls + phase bar */
+.controls { display: flex; align-items: center; gap: 10px; margin: 14px 0 6px; flex-wrap: wrap; }
+.btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--surface);
+  border-radius: 8px; padding: 6px 12px; font-size: 13px; }
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.btn:disabled, .phasebar input:disabled { opacity: .45; cursor: default; }
+.btn svg { width: 12px; height: 12px; fill: currentColor; }
+.speed { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.speed button { border: 0; background: var(--surface); padding: 6px 9px; font-size: 12px; }
+.speed button[aria-pressed="true"] { background: var(--boss-bg); font-weight: 600; }
+.clock { margin-left: auto; font: 500 13px var(--font-mono); }
+.phasebar { position: relative; height: 26px; }
+.segs { position: absolute; inset: 9px 0; display: flex; border-radius: 4px; overflow: hidden; }
+.segs i { display: block; height: 100%; }
+.phasebar input { position: absolute; inset: 0; width: 100%; margin: 0; background: transparent; appearance: none; -webkit-appearance: none; }
+.phasebar input::-webkit-slider-runnable-track { height: 26px; background: transparent; }
+.phasebar input::-webkit-slider-thumb { -webkit-appearance: none; width: 4px; height: 26px; background: var(--fg); border-radius: 2px; }
+.phasebar input::-moz-range-track { background: transparent; }
+.phasebar input::-moz-range-thumb { width: 4px; height: 26px; background: var(--fg); border: 0; border-radius: 2px; }
+.legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+.key { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 8px 28px; margin: 0 0 14px;
+  padding: 10px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; font-size: 12px; color: var(--muted); }
+.key div { min-width: 0; }
+.key h2 { grid-column: 1 / -1; margin: 0 0 2px; }
+.key b { color: var(--fg); font: 600 12px var(--font-mono); margin-right: 4px; }
+.key b { display: block; margin: 0 0 2px; }
+.key .states { display: grid; gap: 4px; }
+.key .states span { white-space: nowrap; }
+.key .chip { display: inline-block; min-width: 54px; margin-right: 6px; text-align: center; white-space: nowrap; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+
+/* main column */
+.main { display: grid; gap: 16px; }
+/* workflow */
+.flow-scroll { overflow-x: auto; min-width: 0; }
+.flow { display: grid; grid-template-columns: minmax(205px, 0.9fr) 22px minmax(168px,1.25fr) 22px minmax(150px,1fr) 22px minmax(168px,1.25fr) 22px minmax(140px,0.8fr); min-width: 960px; align-items: stretch; }
+.stage { background: var(--surface); border: 1px solid var(--line); border-top: 3px solid var(--c); border-radius: 10px; padding: 12px; min-width: 0; }
+.stage-h { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 2px 8px; margin-bottom: 10px; }
+.stage-h b { font: 600 15px var(--font-head); color: var(--c); }
+.stage-h small { color: var(--faint); font-size: 11px; }
+.s-boss { --c: var(--boss); --cb: var(--boss-bg); }
+.s-map  { --c: var(--map);  --cb: var(--map-bg); }
+.s-mid  { --c: var(--mid);  --cb: var(--mid-bg); }
+.s-red  { --c: var(--red);  --cb: var(--red-bg); }
+.s-disk { --c: var(--disk); --cb: var(--disk-bg); }
+.arrow { position: relative; align-self: center; height: 4px; margin: 0 4px; background: var(--line); border-radius: 2px; }
+.arrow::after { content: ""; position: absolute; right: -4px; top: -4px; border: 6px solid transparent; border-left-color: var(--line); border-right: 0; }
+.arrow.on { background: repeating-linear-gradient(90deg, var(--c) 0 6px, transparent 6px 10px); background-size: 20px 4px; animation: flow .6s linear infinite; }
+.arrow.on::after { border-left-color: var(--c); }
+@keyframes flow { to { background-position: 20px 0; } }
+
+.kv { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.kv b { display: block; color: var(--fg); font: 500 12px var(--font-mono); overflow-wrap: anywhere; }
+.kv b.one { white-space: nowrap; overflow-wrap: normal; }
+.sub { font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .06em; margin: 10px 0 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; min-height: 22px; }
+.chip { font: 500 11px var(--font-mono); padding: 2px 6px; border-radius: 4px; border: 1px dashed var(--line); color: var(--faint); background: var(--surface); }
+.chip.done { border: 1px solid var(--c); background: var(--cb); color: var(--c); }
+.chip.run { border: 1px solid var(--c); color: var(--fg);
+  background: linear-gradient(90deg, var(--cb) var(--p), var(--surface) var(--p)); }
+.chip.lost { border: 1px solid var(--c); color: var(--muted); text-decoration: line-through;
+  background: repeating-linear-gradient(135deg, var(--surface) 0 3px, color-mix(in srgb, var(--c) 40%, var(--surface)) 3px 5px); }
+.chip .bk { font: 600 9px var(--font-body); text-transform: uppercase; letter-spacing: .04em; margin-left: 4px; }
+.status { font-size: 12px; padding: 6px 8px; border-radius: 6px; background: var(--cb); color: var(--c); font-weight: 500; }
+
+.machines { display: grid; gap: 8px; }
+.machine { border: 1px solid var(--line); border-radius: 8px; padding: 8px 9px; }
+.machine.busy { border-color: var(--c); }
+.mh { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 6px; align-items: center; margin-bottom: 6px; }
+.mh b { font: 600 12px var(--font-mono); }
+.pill { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--bg); color: var(--faint); white-space: nowrap; }
+.busy .pill { background: var(--cb); color: var(--c); }
+.slow { font-size: 10px; color: var(--faint); }
+
+.grid { display: grid; gap: 3px; }
+.grow { display: grid; grid-template-columns: 30px repeat(var(--R), minmax(0,1fr)); gap: 3px; align-items: center; }
+.grow > span { font: 500 11px var(--font-mono); color: var(--muted); }
+.cell { height: 20px; border-radius: 3px; border: 1px dashed var(--line); font: 10px/18px var(--font-mono); text-align: center; color: var(--faint); overflow: hidden; white-space: nowrap; }
+.cell.on { border: 1px solid var(--c); color: var(--fg); background: color-mix(in srgb, var(--c) calc(var(--a) * 1%), var(--surface)); }
+.ghead { font: 500 10px var(--font-mono); color: var(--faint); text-align: center; }
+
+.file { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 2px 6px; border: 1px dashed var(--line); border-radius: 4px; padding: 6px 8px; margin-bottom: 6px; font-size: 12px; min-width: 0; }
+.file b, .file span { min-width: 0; overflow-wrap: anywhere; }
+.file b { font: 500 12px var(--font-mono); }
+.file span { color: var(--faint); font: 11px var(--font-mono); }
+.file.on { border: 1px solid var(--c); background: var(--cb); }
+.file.on span { color: var(--c); }
+
+/* detail panel (opens below the workflow) */
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; scroll-margin-top: 16px; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px 28px; align-items: start; }
+.cols.two { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.panel-h { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.panel-h h2 { margin: 0; }
+.x { border: 0; background: none; color: var(--muted); font-size: 18px; line-height: 1; padding: 2px 6px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th { text-align: right; font-weight: 600; color: var(--muted); padding: 6px 0 6px 8px; border-bottom: 1px solid var(--line); }
+th:first-child { text-align: left; padding-left: 0; }
+td { padding: 5px 0 5px 8px; border-bottom: 1px solid var(--line); text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+td:first-child { text-align: left; font-family: var(--font-body); padding-left: 0; }
+tr.grp td { color: var(--faint); font: 600 10px var(--font-body); text-transform: uppercase; letter-spacing: .08em; padding-top: 12px; border-bottom: 0; }
+tr.diff td:not(:first-child) { font-weight: 500; }
+td.win { color: var(--red); }
+.note { font-size: 12px; color: var(--muted); margin: 10px 0 0; }
+.bars { display: grid; gap: 6px; margin: 4px 0 12px; }
+.bar { display: grid; grid-template-columns: 70px 1fr 74px; gap: 8px; align-items: center; font-size: 12px; }
+.bar div { height: 10px; background: var(--bg); border-radius: 3px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--mid); }
+.bar span:last-child { text-align: right; font-family: var(--font-mono); }
+.jobs { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 8px; }
+.jobcard { text-align: left; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 9px 10px; display: grid; gap: 3px; }
+.jobcard:hover { border-color: var(--muted); }
+.jobcard.sel { border-color: var(--fg); }
+.jobcard .top { display: flex; justify-content: space-between; gap: 8px; }
+.jobcard b { font: 600 12px var(--font-mono); }
+.jobcard small { color: var(--muted); font-size: 11px; font-family: var(--font-mono); overflow-wrap: anywhere; }
+.tag { font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--red-bg); color: var(--red); font-weight: 600; }
+.tag.bad { background: var(--bg); color: var(--bad); }
+
+@media (max-width: 700px) {
+  h1 { font-size: 20px; }
+  .clock { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .arrow.on { animation: none; } }
+body { margin: 0; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="top">
+    <span class="spacer"></span>
+    <h1>Mini-MapReduce Workflow Visualization</h1>
+    <button class="theme" id="theme" type="button"></button>
+  </div>
+  <p class="conn" id="conn" hidden>boss unreachable</p>
+  <div class="tabs" role="group" aria-label="Details">
+    <button class="tab" type="button" data-panel="counters" aria-expanded="false" aria-controls="panel">Counters</button>
+    <button class="tab" type="button" data-panel="combiner" aria-expanded="false" aria-controls="panel">Combiner</button>
+    <button class="tab" type="button" data-panel="jobs" aria-expanded="false" aria-controls="panel">Previous jobs</button>
+  </div>
+  <div class="job" id="job"></div>
+  <div class="viewing" id="viewing"></div>
+
+  <div class="controls">
+    <button class="btn primary" id="play" type="button" aria-label="Play simulation"></button>
+    <button class="btn" id="reset" type="button">Reset to 0 s</button>
+    <div class="speed" role="group" aria-label="Playback speed">
+      <button type="button" data-s="0.5" aria-pressed="false">0.5×</button>
+      <button type="button" data-s="1" aria-pressed="true">1×</button>
+      <button type="button" data-s="2" aria-pressed="false">2×</button>
+    </div>
+    <span class="clock" id="clock"></span>
+  </div>
+  <div class="phasebar"><div class="segs" id="segs"></div>
+    <input type="range" id="scrub" min="0" max="1000" value="1000" aria-label="Simulation time"></div>
+  <div class="legend">
+    <span><i style="background:var(--boss)"></i>Boss: split + hash</span>
+    <span><i style="background:var(--map)"></i>Map</span>
+    <span><i style="background:var(--mid)"></i>Intermediate (shuffle)</span>
+    <span><i style="background:var(--red)"></i>Reduce</span>
+    <span><i style="background:var(--disk)"></i>Output on disk</span>
+  </div>
+  <div class="key" id="key"></div>
+
+  <div class="main" id="main">
+    <div class="flow-scroll"><div class="flow" id="flow"></div></div>
+    <section class="panel" id="panel" hidden></section>
+  </div>
+</div>
+
+<script>
+/* ---------- demo data: shown with ?demo=1, so the page works without a cluster ---------- */
+const DEFAULT_WORKERS = ["worker1", "worker2", "worker3", "worker4"];
+const DEMO_SPEED = { worker1: 1, worker2: 1, worker3: 1, worker4: 0.8 };      // worker4 slightly slower
+const DATASETS = {
+  weather_big: { bytes: 211312924, rows: 4138476, keys: 103, recB: 16.3, combB: 24 },
+  sales:       { bytes: 96400000,  rows: 1910000, keys: 12,  recB: 18.0, combB: 26 },
+  logs:        { bytes: 140200000, rows: 2600000, keys: 2400, recB: 21.5, combB: 30 },
+  weather:     { bytes: 374,       rows: 14,      keys: 4,   recB: 22.0, combB: 30 },
+};
+const DEMO_JOBS = [   // oldest first; the last one is the current job
+  { id: "77b0c4", input: "/input/logs",        output: "/output/url_counts",     ds: "logs",        M: 12, R: 3, combiner: true,  at: "2026-11-14 22:05:12" },
+  { id: "e40d9f", input: "/input/sales",       output: "/output/sales_by_cat",   ds: "sales",       M: 16, R: 4, combiner: true,  at: "2026-11-14 22:40:47" },
+  { id: "51b2aa", input: "/input/weather",     output: "/output/avg_small",      ds: "weather",     M: 4,  R: 2, combiner: false, at: "2026-11-14 23:10:03" },
+  { id: "3fa6d1", input: "/input/weather_big", output: "/output/avg_r8",         ds: "weather_big", M: 16, R: 8, combiner: true,  at: "2026-11-14 23:52:30" },
+  { id: "9c1e07", input: "/input/weather_big", output: "/output/avg_nocomb",     ds: "weather_big", M: 8,  R: 4, combiner: false, at: "2026-11-15 00:20:18" },
+  { id: "a7f3c2", input: "/input/weather_big", output: "/output/avg_temp",       ds: "weather_big", M: 8,  R: 4, combiner: true,  at: "2026-11-15 00:41:55" },
+];
+const BOSS_T = 0.6, MAP_RATE = 24e6, POLL = 0.05;
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const pad = n => String(n).padStart(2, "0");
+function jobName(j) {                     // "Nov 15, 00:41:55 (a7f3c2)", in the viewer's local time
+  if (j.at) {
+    const [d, t] = j.at.split(" "), [, mo, da] = d.split("-");
+    return `${MONTHS[+mo - 1]} ${+da}, ${t} (${j.id})`;
+  }
+  const d = new Date(j.submitted * 1000);
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} (${j.id})`;
+}
+
+function splitInt(total, weights) {      // integers proportional to weights that sum exactly to total
+  const ws = weights.reduce((a, b) => a + b, 0) || 1;
+  const out = weights.map(w => Math.floor(total * w / ws));
+  out[out.length - 1] += total - out.reduce((a, b) => a + b, 0);
+  return out;
+}
+function rng(s) { let x = 0; for (const c of s) x = (x * 31 + c.charCodeAt(0)) >>> 0;
+  return () => (x = (x * 1664525 + 1013904223) >>> 0) / 4294967296; }
+
+/* Deterministic schedule: pull-based workers take the next pending task when free. */
+function simulate(job, combiner) {
+  const WORKERS = DEFAULT_WORKERS, SPEED = DEMO_SPEED;
+  const d = DATASETS[job.ds], r = rng(job.id);
+  const w = Array.from({ length: job.M }, () => 0.85 + 0.3 * r()), ws = w.reduce((a, b) => a + b);
+  const kw = Array.from({ length: job.R }, () => 0.7 + 0.6 * r()), ks = kw.reduce((a, b) => a + b);
+  const keysPer = splitInt(d.keys, kw);
+  const rowsPer = splitInt(d.rows, w);
+  const free = Object.fromEntries(WORKERS.map((n, i) => [n, BOSS_T + i * POLL]));
+  const pick = () => WORKERS.reduce((a, b) => free[b] < free[a] ? b : a);
+  const maps = w.map((x, m) => {
+    const bytes = d.bytes * x / ws, rows = rowsPer[m];
+    const wk = pick(), start = free[wk];
+    const dur = (0.25 + bytes / (MAP_RATE * SPEED[wk])) * (combiner ? 1.04 : 1);
+    free[wk] = start + dur + POLL;
+    const outRec = splitInt(rows, keysPer);
+    const written = combiner ? outRec.map((n, k) => Math.min(n, keysPer[k])) : outRec;
+    const outB = written.map(n => Math.round(n * (combiner ? d.combB : d.recB)));
+    return { m, worker: wk, start, end: start + dur, bytes, rows, outRec, written, outB };
+  });
+  const mapEnd = Math.max(...maps.map(t => t.end));
+  WORKERS.forEach(n => free[n] = Math.max(free[n], mapEnd + POLL));
+  const reds = keysPer.map((keys, k) => {
+    const inRec = maps.reduce((a, t) => a + t.written[k], 0), shuffle = maps.reduce((a, t) => a + t.outB[k], 0);
+    const wk = pick(), start = free[wk];
+    const dur = (0.2 + inRec / 1.6e6 + shuffle / 80e6) / SPEED[wk];
+    free[wk] = start + dur + POLL;
+    return { r: k, worker: wk, start, end: start + dur, inRec, shuffle, groups: keys, outRec: keys, outB: keys * 34 };
+  });
+  const total = Math.max(...reds.map(t => t.end)) + 0.1;
+  return { maps, reds, mapEnd, redStart: Math.min(...reds.map(t => t.start)), total };
+}
+
+/* A simulated run in the same shape fromSnapshot() produces. */
+function demoSim(job, combiner) {
+  const s = simulate(job, combiner);
+  s.maps.forEach(x => Object.assign(x, { mapOut: x.rows, combIn: combiner ? x.rows : 0,
+    combOut: x.written.reduce((a, b) => a + b, 0) }));
+  return { ...s, mapAtt: s.maps, redAtt: s.reds, bossEnd: BOSS_T, doneAt: s.total - 0.1,
+    bytes: DATASETS[job.ds].bytes, live: false, failed: false };
+}
+function demoState() {
+  return { workers: DEFAULT_WORKERS.slice(),
+    jobs: DEMO_JOBS.map(j => ({ ...j, status: "DONE", sim: demoSim(j, j.combiner) })) };
+}
+
+/* ---------- live data: GET /api/state from the boss ---------- */
+const LOST = new Set(["FAILED", "CANCELLED", "LOST"]);
+const isRunning = status => status === "MAP" || status === "REDUCE";
+
+/* One /api/state job -> {maps, reds, mapEnd, redStart, total, ...}, times in seconds since submission.
+   maps/reds hold each task's winning (or running) attempt; mapAtt/redAtt hold every attempt. */
+function fromSnapshot(job, now) {
+  const t0 = job.submitted, live = isRunning(job.status), R = job.R;
+  const total = (job.finished ?? now) - t0;
+  const zeros = () => Array(R).fill(0);
+  const attempts = (task, key) => task.attempts.map(a => ({ [key]: task.index, worker: a.worker,
+    start: a.started - t0, end: a.finished != null ? a.finished - t0 : total,
+    live: live && a.status === "RUNNING", p: a.progress || 0, status: a.status, backup: a.backup }));
+  const pick = list => list.find(a => a.status === "WON") || list.find(a => a.live)
+    || { worker: null, start: Infinity, end: Infinity, live: false, p: 0 };
+  const mapT = job.tasks.filter(x => x.type === "map"), redT = job.tasks.filter(x => x.type === "reduce");
+  const mapAtt = [], redAtt = [];
+  const maps = mapT.map(task => {
+    const a = attempts(task, "m"), w = pick(a), st = task.stats || {};
+    mapAtt.push(...a);
+    return { m: task.index, worker: w.worker, start: w.start, end: w.end, live: w.live, p: w.p,
+      bytes: task.split_bytes || 0, rows: st.map_input_records || 0, mapOut: st.map_output_records || 0,
+      combIn: st.combine_input_records || 0, combOut: st.combine_output_records || 0,
+      written: st.part_records || zeros(), outB: st.part_bytes || zeros() };
+  });
+  const reds = Array.from({ length: R }, (_, r) => {      // no reduce tasks exist until the maps finish
+    const task = redT.find(x => x.index === r), a = task ? attempts(task, "r") : [];
+    const w = pick(a), st = (task && task.stats) || {};
+    redAtt.push(...a);
+    return { r, worker: w.worker, start: w.start, end: w.end, live: w.live, p: w.p,
+      inRec: st.reduce_input_records || 0, shuffle: st.shuffle_bytes || 0,
+      groups: st.reduce_input_groups || 0, outRec: st.reduce_output_records || 0 };
+  });
+  const mapStarts = mapAtt.map(a => a.start), redStarts = reds.map(x => x.start).filter(Number.isFinite);
+  const mapsDone = maps.length > 0 && maps.every(x => !x.live && Number.isFinite(x.end));
+  return { maps, reds, mapAtt, redAtt, total, live, failed: job.status === "FAILED",
+    bossEnd: mapStarts.length ? Math.min(...mapStarts) : total,          // boss splitting: submit -> first map
+    mapEnd: mapsDone ? Math.max(...maps.map(x => x.end)) : Infinity,
+    redStart: redStarts.length ? Math.min(...redStarts) : Infinity,
+    doneAt: live ? Infinity : total,
+    bytes: maps.reduce((n, x) => n + x.bytes, 0) };
+}
+
+/* ---------- state ---------- */
+const DEMO = new URLSearchParams(location.search).get("demo") === "1";
+const NO_JOB = { id: "", input: "—", output: "—", M: 0, R: 0, combiner: false };
+const NO_SIM = { maps: [], reds: [], mapAtt: [], redAtt: [], bossEnd: 0, mapEnd: 0, redStart: 0,
+  total: 0, doneAt: Infinity, bytes: 0, live: false, failed: false };
+let WORKERS = DEFAULT_WORKERS.slice(), JOBS = [], sim = NO_SIM;
+const S = { sel: null, t: 0, speed: 1, playing: false, panel: null, offline: false };   // sel: job id, null = current
+const $ = id => document.getElementById(id);
+const idx = () => { const i = JOBS.findIndex(j => j.id === S.sel); return i >= 0 ? i : JOBS.length - 1; };
+const cur = () => JOBS[idx()] || NO_JOB;
+
+function setData(workers, jobs) {
+  const before = cur().id, wasLive = sim.live;
+  WORKERS = workers; JOBS = jobs;
+  if (S.sel && !JOBS.some(j => j.id === S.sel)) S.sel = null;
+  const j = cur(); sim = j.sim || NO_SIM;
+  if (sim.live) { S.t = sim.total; S.playing = false; }              // live: the cursor follows real time
+  else if (j.id !== before || wasLive) S.t = sim.total;              // a new job, or one that just finished
+  else S.t = Math.min(S.t, sim.total);
+}
+
+async function poll() {
+  let wait = 2000;
+  try {
+    const r = await fetch("/api/state", { cache: "no-store" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const s = await r.json();
+    const names = new Set(s.workers.map(w => w.worker_id));
+    s.jobs.forEach(j => j.tasks.forEach(t => t.attempts.forEach(a => names.add(a.worker))));
+    const jobs = s.jobs.map(j => ({ id: j.id, input: j.input, output: j.output, M: j.M, R: j.R,
+      combiner: j.use_combiner, submitted: j.submitted, status: j.status, error: j.error,
+      sim: fromSnapshot(j, s.now) }));
+    setData(names.size ? [...names].sort() : DEFAULT_WORKERS.slice(), jobs);
+    S.offline = false;
+    if (jobs.some(j => isRunning(j.status))) wait = 500;
+  } catch (e) {
+    S.offline = true;                                                // keep the last data
+  }
+  if (!S.playing) render();
+  if (S.panel && S.panel !== "counters") renderPanel();
+  setTimeout(poll, wait);
+}
+
+const fmtB = b => b < 1024 ? Math.round(b) + " B" : b < 1048576 ? (b / 1024).toFixed(1) + " KB" : (b / 1048576).toFixed(1) + " MB";
+const fmtS = b => b < 1024 ? Math.round(b) + "B" : b < 1048576 ? Math.round(b / 1024) + "K" : (b / 1048576).toFixed(1) + "M";
+const fmtN = n => Math.round(n).toLocaleString("en-US");
+const isRun = (x, t) => t >= x.start && (x.live || t < x.end);
+const isDone = (x, t) => !x.live && t >= x.end;
+const prog = (x, t) => !(t >= x.start) ? 0 : x.live ? x.p
+  : Math.max(0, Math.min(1, (t - x.start) / ((x.end - x.start) || 1e-9)));
+
+function phase(t) {
+  if (!cur().id) return ["boss", "Waiting for a job"];
+  if (t >= sim.doneAt) return ["disk", sim.failed ? "Failed" : "Done"];
+  if (t < sim.bossEnd) return ["boss", "Boss splitting input"];
+  if (t < sim.mapEnd) return ["map", "Map phase"];
+  if (t < sim.redStart) return ["mid", "Shuffle: waiting for all maps"];
+  return ["red", "Reduce phase"];
+}
+
+/* ---------- render ---------- */
+function renderHeader() {
+  const j = cur(), none = !j.id;
+  $("conn").hidden = !S.offline;
+  $("job").innerHTML = none ? `<span>No jobs yet. Submit one with ./submit (step 6 of the README).</span>` : `
+    <span>Job run <b>${jobName(j)}</b></span><span>Input <b>${j.input}</b></span><span>Output <b>${j.output}</b></span>
+    <span>M (map partitions) <b>${j.M}</b></span><span>R (reduce partitions) <b>${j.R}</b></span><span>Combiner <b>${j.combiner ? "on" : "off"}</b></span>
+    <span>Time <b>${S.t.toFixed(2)} s / ${sim.total.toFixed(2)} s</b></span>`;
+  $("viewing").innerHTML = none || idx() === JOBS.length - 1 ? ""
+    : `Viewing a previous job · <button type="button" id="back">back to current job</button>`;
+  const b = $("back"); if (b) b.onclick = () => loadJob(JOBS.length - 1);
+  const M = j.M || 4, R = j.R || 2;                     // no job yet: explain with example sizes
+  const range = (L, n) => n === 1 ? `${L}0` : n === 2 ? `${L}0, ${L}1` : `${L}0…${L}${n - 1}`;
+  const pm = `P${Math.min(3, M - 1)}`, rr = `R${Math.min(1, R - 1)}`, pc = `P${M - 1}`;
+  $("key").innerHTML = `
+    <h2>How to read this diagram</h2>
+    <div><b>${range("P", M)}</b>Map partitions. The boss cuts the input into M = ${M} piece${M === 1 ? "" : "s"}; each map task reads one.</div>
+    <div><b>${range("R", R)}</b>Reduce partitions. Each key goes to one of R = ${R} group${R === 1 ? "" : "s"} (md5(key) mod ${R}); each reduce task handles one group and writes part-r.</div>
+    <div><b>Grid cell</b>Row ${pm}, column →${rr} = the file map ${pm} wrote with only ${rr}'s keys (size shown; empty = not written yet). Reducer ${rr} reads its whole column.</div>
+    <div><b>Task condition</b><div class="states">
+      <span><span class="chip">${pc}</span>waiting in the boss's queue</span>
+      <span><span class="chip run s-map" style="--p:60%">${pc} 60%</span>running, 60% done</span>
+      <span><span class="chip done s-map">${pc}</span>finished</span>
+      <span><span class="chip lost s-map">${pc}</span>failed / cancelled / lost</span>
+      <span><span class="chip done s-map">${pc}<small class="bk">backup</small></span>backup copy (-B)</span></div></div>`;
+  const cl = x => Math.min(x, sim.total);
+  const segs = [["boss", 0, cl(sim.bossEnd)], ["map", cl(sim.bossEnd), cl(sim.mapEnd)],
+    ["mid", cl(sim.mapEnd), cl(sim.redStart)], ["red", cl(sim.redStart), sim.total]];
+  $("segs").innerHTML = segs.map(([c, a, b]) => `<i style="width:${100 * Math.max(0, b - a) / (sim.total || 1)}%;background:var(--${c})"></i>`).join("");
+  $("clock").textContent = `t = ${S.t.toFixed(2)} s · ${phase(S.t)[1]}`;
+  $("scrub").value = Math.round(1000 * S.t / (sim.total || 1));
+  const locked = none || sim.live;                       // live: no replay until the job ends
+  $("play").disabled = $("reset").disabled = $("scrub").disabled = locked;
+  $("play").innerHTML = S.playing
+    ? `<svg viewBox="0 0 12 12"><rect x="2" y="1" width="3" height="10"/><rect x="7" y="1" width="3" height="10"/></svg>Pause`
+    : `<svg viewBox="0 0 12 12"><path d="M2 1l9 5-9 5z"/></svg>${!locked && S.t >= sim.total ? "Replay" : "Play"}`;
+}
+
+function machineHTML(name, tasks, t, kind) {
+  const mine = tasks.filter(x => x.worker === name && t >= x.start);
+  const busy = mine.find(x => isRun(x, t));
+  const label = kind === "map" ? "P" : "R";
+  const id = x => kind === "map" ? x.m : x.r;
+  const chips = mine.map(x => {
+    const bk = x.backup ? `<small class="bk">backup</small>` : "", pct = Math.round(prog(x, t) * 100);
+    return isRun(x, t) ? `<span class="chip run" style="--p:${pct}%">${label}${id(x)} ${pct}%${bk}</span>`
+      : LOST.has(x.status) ? `<span class="chip lost" title="${x.status.toLowerCase()} attempt">${label}${id(x)}${bk}</span>`
+      : `<span class="chip done">${label}${id(x)}${bk}</span>`;
+  }).join("");
+  return `<div class="machine ${busy ? "busy" : ""}">
+    <div class="mh"><b>${name}</b><span class="pill">${busy ? `${kind} ${label}${id(busy)}` : "idle"}</span></div>
+    <div class="chips">${chips || `<span class="slow">no ${kind} partitions yet</span>`}</div></div>`;
+}
+
+function renderFlow() {
+  const j = cur(), none = !j.id, t = S.t, [ph] = phase(t);
+  const pendingMaps = sim.maps.filter(x => t >= sim.bossEnd && t < x.start);
+  const pendingReds = t >= sim.mapEnd ? sim.reds.filter(x => t < x.start) : [];
+  const created = t >= sim.bossEnd;
+  const maxB = Math.max(...sim.maps.flatMap(x => x.outB), 1);
+  const on = (a) => a ? "arrow on" : "arrow";
+
+  const boss = `<section class="stage s-boss">
+    <div class="stage-h"><b>Boss</b></div>
+    <div class="kv">Split input<b class="one">${none ? "—" : `${fmtB(sim.bytes)} → ${j.M} partitions`}</b></div>
+    <div class="kv">Hash keys<b>md5(key) mod ${none ? "R" : j.R}</b></div>
+    <div class="sub">Map queue</div>
+    <div class="chips">${!created ? `<span class="slow">splitting…</span>` : pendingMaps.length
+      ? pendingMaps.map(x => `<span class="chip">P${x.m}</span>`).join("") : `<span class="slow">empty</span>`}</div>
+    <div class="sub">Reduce queue</div>
+    <div class="chips">${t < sim.mapEnd ? `<span class="slow">after all maps</span>` : pendingReds.length
+      ? pendingReds.map(x => `<span class="chip">R${x.r}</span>`).join("") : `<span class="slow">empty</span>`}</div>
+    <div class="sub">Phase</div><div class="status">${phase(t)[1]}</div>
+    <p class="note">Workers pull tasks with /get_task.</p></section>`;
+
+  const map = `<section class="stage s-map">
+    <div class="stage-h"><b>Map</b><small>${sim.maps.filter(x => isDone(x, t)).length}/${j.M} partitions</small></div>
+    <div class="machines">${WORKERS.map(n => machineHTML(n, sim.mapAtt, t, "map")).join("")}</div></section>`;
+
+  const rows = sim.maps.map(x => `<div class="grow"><span>P${x.m}</span>${x.outB.map((b, k) => isDone(x, t)
+    ? `<div class="cell on" style="--a:${Math.round(15 + 55 * b / maxB)}" title="map-${x.m}-part-${k}.jsonl · ${fmtN(x.written[k])} records · ${fmtB(b)}">${fmtS(b)}</div>`
+    : `<div class="cell" title="map-${x.m}-part-${k}.jsonl · not written yet"></div>`).join("")}</div>`).join("");
+  const mid = `<section class="stage s-mid">
+    <div class="stage-h"><b>Intermediate</b><small>${j.M} × ${j.R} files</small></div>
+    ${none ? `<div class="chips"><span class="slow">no files yet</span></div>` : `<div class="grid" style="--R:${j.R}">
+      <div class="grow"><span></span>${sim.reds.map(x => `<div class="ghead">→R${x.r}</div>`).join("")}</div>${rows}</div>
+    <p class="note">${j.combiner ? "Combiner on: one record per key per file." : "Combiner off: every map record is written."}</p>`}</section>`;
+
+  const red = `<section class="stage s-red">
+    <div class="stage-h"><b>Reduce</b><small>${sim.reds.filter(x => isDone(x, t)).length}/${j.R} partitions</small></div>
+    <div class="machines">${WORKERS.map(n => machineHTML(n, sim.redAtt, t, "reduce")).join("")}</div></section>`;
+
+  const disk = `<section class="stage s-disk">
+    <div class="stage-h"><b>Disk</b><small>${j.output.split("/").filter(Boolean).pop() || "—"}/</small></div>
+    ${sim.reds.map(x => isDone(x, t)
+      ? `<div class="file on"><b>part-${x.r}</b><span>${fmtN(x.outRec)} rec</span></div>`
+      : `<div class="file"><b>part-${x.r}</b><span>—</span></div>`).join("")}
+    ${t >= sim.doneAt && !sim.failed ? `<div class="file on"><b>_SUCCESS</b><span>done</span></div>` : ""}</section>`;
+
+  $("flow").innerHTML = boss
+    + `<div class="${on(ph === "map")}" style="--c:var(--map)"></div>` + map
+    + `<div class="${on(ph === "map")}" style="--c:var(--mid)"></div>` + mid
+    + `<div class="${on(ph === "red")}" style="--c:var(--red)"></div>` + red
+    + `<div class="${on(ph === "red")}" style="--c:var(--disk)"></div>` + disk;
+}
+
+function counters(s, t) {
+  const doneM = s.maps.filter(x => isDone(x, t)), doneR = s.reds.filter(x => isDone(x, t));
+  const sum = (a, f) => a.reduce((n, x) => n + f(x), 0);
+  return {
+    mapIn: sum(s.maps, x => x.rows * prog(x, t)), inB: sum(s.maps, x => x.bytes * prog(x, t)),
+    mapOut: sum(doneM, x => x.mapOut), combIn: sum(doneM, x => x.combIn), combOut: sum(doneM, x => x.combOut),
+    inter: sum(doneM, x => x.outB.reduce((a, b) => a + b, 0)),
+    shuffle: sum(doneR, x => x.shuffle), redIn: sum(doneR, x => x.inRec),
+    groups: sum(doneR, x => x.groups), redOut: sum(doneR, x => x.outRec),
+    tasks: doneM.length + doneR.length,
+  };
+}
+
+function renderPanel() {
+  const p = $("panel"), j = cur();
+  document.querySelectorAll(".tab").forEach(b => b.setAttribute("aria-expanded", String(b.dataset.panel === S.panel)));
+  p.hidden = !S.panel;
+  if (!S.panel) return;
+  const head = title => `<div class="panel-h"><h2>${title}</h2><button class="x" type="button" aria-label="Close panel" data-close>×</button></div>`;
+
+  if (S.panel === "counters") {
+    const c = counters(sim, S.t);
+    const row = (k, v) => `<tr><td>${k}</td><td>${v}</td></tr>`;
+    const grp = (name, rows) => `<table><tr class="grp"><td colspan="2">${name}</td></tr>${rows}</table>`;
+    p.innerHTML = head("Counters") + `<div class="cols">
+      ${grp("Map", row("Map input records", fmtN(c.mapIn)) + row("Map output records", fmtN(c.mapOut)) + row("Input bytes", fmtB(c.inB)))}
+      ${grp("Combine", row("Combine input records", j.combiner ? fmtN(c.combIn) : "0") + row("Combine output records", j.combiner ? fmtN(c.combOut) : "0"))}
+      ${grp("Shuffle", row("Intermediate bytes", fmtB(c.inter)) + row("Reduce shuffle bytes", fmtB(c.shuffle)))}
+      ${grp("Reduce", row("Reduce input groups (keys)", fmtN(c.groups)) + row("Reduce input records", fmtN(c.redIn)) + row("Reduce output records", fmtN(c.redOut)) + row("Tasks finished", `${c.tasks} / ${j.M + j.R}`))}
+      </div><p class="note">Values at t = ${S.t.toFixed(2)} s; they grow as tasks finish.</p>`;
+  }
+  if (S.panel === "combiner") {
+    // the most recent other finished job with the same input, M and R and the opposite setting
+    const other = DEMO || !j.id ? null : JOBS.slice().reverse().find(x => x !== j && x.status === "DONE"
+      && x.input === j.input && x.M === j.M && x.R === j.R && x.combiner !== j.combiner);
+    const [a, b] = DEMO ? [demoSim(j, false), demoSim(j, true)]
+      : other ? (j.combiner ? [other.sim, sim] : [sim, other.sim]) : [null, null];
+    if (!j.id) {
+      p.innerHTML = head("Combiner: off vs on") + `<p class="note">No jobs yet. Submit one with ./submit (step 6 of the README).</p>`;
+      return;
+    }
+    if (!a) {
+      const c = counters(sim, sim.total);
+      p.innerHTML = head("Combiner: off vs on") + `<table><tr><th>Counter</th><th>This job</th></tr>
+        <tr><td>Combine input records</td><td>${fmtN(c.combIn)}</td></tr>
+        <tr><td>Combine output records</td><td>${fmtN(c.combOut)}</td></tr>
+        <tr><td>Intermediate bytes</td><td>${fmtB(c.inter)}</td></tr></table>
+        <p class="note">This job ran with the combiner ${j.combiner ? "on" : "off"}. Run the same job with -C turned ${j.combiner ? "off" : "on"} to compare.</p>`;
+      return;
+    }
+    const ca = counters(a, a.total), cb = counters(b, b.total);
+    const rows = [["Map output records", ca.mapOut, cb.mapOut], ["Combine input records", 0, cb.combIn],
+      ["Combine output records", 0, cb.combOut], ["Intermediate bytes", ca.inter, cb.inter, fmtB],
+      ["Reduce shuffle bytes", ca.shuffle, cb.shuffle, fmtB], ["Reduce input records", ca.redIn, cb.redIn],
+      ["Reduce output records", ca.redOut, cb.redOut], ["Job time (s)", a.total, b.total, v => v.toFixed(2)]];
+    const f = (r, v) => (r[3] || fmtN)(v);
+    const pct = 100 * (1 - cb.shuffle / Math.max(1, ca.shuffle));
+    const pctTxt = pct >= 99.9 ? pct.toFixed(2) : pct.toFixed(1);
+    p.innerHTML = head("Combiner: off vs on") + `<div class="cols two"><div>
+      <div class="note" style="margin:0 0 6px">Bytes sent from map to reduce (shuffle)</div>
+      <div class="bars">
+        <div class="bar"><span>Off</span><div><i style="width:100%"></i></div><span>${fmtB(ca.shuffle)}</span></div>
+        <div class="bar"><span>On</span><div><i style="width:${Math.max(0.6, 100 * cb.shuffle / Math.max(1, ca.shuffle))}%"></i></div><span>${fmtB(cb.shuffle)}</span></div>
+      </div>
+      <p class="note">A combiner merges each map partition's records by key before they are written, so far less data
+      reaches the reducers. Final output is the same.</p></div>
+      <table><tr><th>Counter</th><th>Without</th><th>With</th></tr>
+      ${rows.map(r => `<tr class="${r[1] !== r[2] ? "diff" : ""}"><td>${r[0]}</td><td>${f(r, r[1])}</td>
+        <td class="${r[2] < r[1] ? "win" : ""}">${f(r, r[2])}</td></tr>`).join("")}</table></div>
+      ${DEMO ? `<p class="note">Same job (${j.input}, M=${j.M}, R=${j.R}) simulated both ways. The combiner cuts shuffled bytes by
+      ${pctTxt}% and gives identical output records. This job ran with the combiner ${j.combiner ? "on" : "off"}.</p>`
+      : `<p class="note">Compared with ${jobName(other)}, which ran the same input, M and R with the combiner
+      ${other.combiner ? "on" : "off"}. The combiner cuts shuffled bytes by ${pctTxt}%${ca.redOut === cb.redOut ? " and gives identical output records" : ""}.
+      This job ran with the combiner ${j.combiner ? "on" : "off"}.</p>`}`;
+  }
+  if (S.panel === "jobs") {
+    const prev = JOBS.slice(0, -1).reverse();
+    p.innerHTML = head("Latest 5 previous jobs") + (prev.length ? `<div class="jobs">${prev.map(x => {
+      const i = JOBS.indexOf(x);
+      return `<button type="button" class="jobcard ${i === idx() ? "sel" : ""}" data-job="${i}">
+        <span class="top"><b>${jobName(x)}</b><span class="tag ${x.status === "FAILED" ? "bad" : ""}">${x.status}</span></span>
+        <small>${x.input} → ${x.output}</small>
+        <small>M=${x.M} R=${x.R} · combiner ${x.combiner ? "on" : "off"} · ran ${x.sim.total.toFixed(2)} s</small></button>`;
+    }).join("")}</div><p class="note">Select a job to replay it in the workflow above.</p>`
+      : `<p class="note">No previous jobs yet.</p>`);
+  }
+}
+
+function render() { renderHeader(); renderFlow(); if (S.panel === "counters") renderPanel(); }
+
+function loadJob(i) {
+  S.sel = i === JOBS.length - 1 ? null : JOBS[i].id; S.playing = false;
+  sim = JOBS[i].sim; S.t = sim.live ? sim.total : 0;
+  renderPanel(); render();
+}
+
+/* ---------- playback ---------- */
+let last = 0;
+function tick(now) {
+  if (!S.playing) return;
+  const dt = last ? (now - last) / 1000 : 0; last = now;
+  S.t = Math.min(sim.total, S.t + dt * S.speed * 0.5);     // 1x = half real speed, so the flow is readable
+  if (S.t >= sim.total) S.playing = false;
+  render();
+  if (S.playing) requestAnimationFrame(tick);
+}
+$("play").onclick = () => {
+  if (S.playing) { S.playing = false; render(); return; }
+  if (S.t >= sim.total) S.t = 0;
+  S.playing = true; last = 0; requestAnimationFrame(tick);
+};
+$("reset").onclick = () => { S.playing = false; S.t = 0; render(); };
+$("scrub").oninput = e => { S.playing = false; S.t = sim.total * e.target.value / 1000; render(); };
+document.querySelectorAll(".speed button").forEach(b => b.onclick = () => {
+  S.speed = +b.dataset.s;
+  document.querySelectorAll(".speed button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+});
+document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
+  S.panel = S.panel === b.dataset.panel ? null : b.dataset.panel; renderPanel();
+  if (S.panel) $("panel").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "nearest" });
+});
+
+/* light / dark switch: starts from the viewer's theme, remembers the choice in this browser */
+const root = document.documentElement;
+const isDark = () => root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+function drawTheme() {
+  const d = isDark();
+  $("theme").setAttribute("aria-label", d ? "Switch to light mode" : "Switch to dark mode");
+  $("theme").title = d ? "Switch to light mode" : "Switch to dark mode";
+  $("theme").innerHTML = d
+    ? `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>`
+    : `<svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>`;
+}
+try { const t = localStorage.getItem("mr-theme"); if (t) root.dataset.theme = t; } catch (e) {}
+$("theme").onclick = () => {
+  root.dataset.theme = isDark() ? "light" : "dark";
+  try { localStorage.setItem("mr-theme", root.dataset.theme); } catch (e) {}
+  drawTheme();
+};
+drawTheme();
+$("panel").addEventListener("click", e => {
+  if (e.target.closest("[data-close]")) { S.panel = null; renderPanel(); return; }
+  const jc = e.target.closest("[data-job]"); if (jc) loadJob(+jc.dataset.job);
+});
+
+if (DEMO) { const d = demoState(); setData(d.workers, d.jobs); }
+render(); renderPanel();
+if (!DEMO) poll();
+</script>
+</body>
+</html>

@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 
 from mapreduce import common, storage
 
@@ -23,6 +23,13 @@ jobs = {}            # job_id -> job dict (insertion ordered)
 # Liveness of every worker that has ever called us.
 workers = {}         # worker_id -> {"last_seen", "status": "alive"|"failed", "task"}
 HEARTBEAT_TIMEOUT = float(os.environ.get("HEARTBEAT_TIMEOUT", 10))
+
+# Snapshots of finished jobs read from shared/jobs/<id>/state.json at start, so the
+# visualization still lists them after a boss restart. Read-only after loading.
+history = []
+HISTORY = 6          # jobs shown by /api/state: the current one + 5 previous
+VISUALIZATION_DIR = os.environ.get("VISUALIZATION_DIR", os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "visualization"))
 
 # Backup tasks for stragglers (only for jobs submitted with -B).
 BACKUP_CFG = {
@@ -339,6 +346,7 @@ def task_done():
 
     worker = d.get("worker_id", "?")
     finished = False
+    snap = None          # snapshot of a job that just ended, saved after the lock
 
     """
     Worker A and Worker B are running "map-0". Worker B finishes first and calls task_done.
@@ -377,31 +385,34 @@ def task_done():
                 return jsonify({"ok": True})
             job.update(status="FAILED", finished=now(),
                        error=f"{task['task_id']} failed: {d.get('error')}")
-            return jsonify({"ok": True})
+            snap = _snapshot(job)
 
+        else:
+            # Mark the individual task as completed: first finisher wins. A success
+            # from a worker we presumed dead is accepted too: output files are
+            # deterministic and atomically renamed, so they're complete.
+            _end_attempt(job, task, a, "WON")
+            task.update(state="DONE", worker=a["worker"], finished=a["finished"],
+                        stats=d.get("stats") or {})
+            for other in _running(task):
+                _end_attempt(job, task, other, "CANCELLED")
 
-        # Mark the individual task as completed: first finisher wins. A success
-        # from a worker we presumed dead is accepted too: output files are
-        # deterministic and atomically renamed, so they're complete.
-        _end_attempt(job, task, a, "WON")
-        task.update(state="DONE", worker=a["worker"], finished=a["finished"],
-                    stats=d.get("stats") or {})
-        for other in _running(task):
-            _end_attempt(job, task, other, "CANCELLED")
+            # BARRIER 1: If in MAP phase, check if ALL map tasks are now DONE
+            # MAP -> REDUCE
+            if job["status"] == "MAP" and all(t["state"] == "DONE" for t in job["map_tasks"]):
+                job["reduce_tasks"] = [_new_task(job["id"], "reduce", r)
+                                       for r in range(job["num_reduces"])]
+                job["status"] = "REDUCE"
 
-        # BARRIER 1: If in MAP phase, check if ALL map tasks are now DONE
-        # MAP -> REDUCE
-        if job["status"] == "MAP" and all(t["state"] == "DONE" for t in job["map_tasks"]):
-            job["reduce_tasks"] = [_new_task(job["id"], "reduce", r)
-                                   for r in range(job["num_reduces"])]
-            job["status"] = "REDUCE"
-
-        # BARRIER 2: If in REDUCE phase, check if ALL reduce tasks are now DONE
-        # REDUCE -> DONE
-        elif job["status"] == "REDUCE" and all(t["state"] == "DONE" for t in job["reduce_tasks"]):
-            storage.write_atomic(f"{job['output'].rstrip('/')}/_SUCCESS", "")
-            job.update(status="DONE", finished=now())
-            finished = True
+            # BARRIER 2: If in REDUCE phase, check if ALL reduce tasks are now DONE
+            # REDUCE -> DONE
+            elif job["status"] == "REDUCE" and all(t["state"] == "DONE" for t in job["reduce_tasks"]):
+                storage.write_atomic(f"{job['output'].rstrip('/')}/_SUCCESS", "")
+                job.update(status="DONE", finished=now())
+                finished = True
+                snap = _snapshot(job)
+    if snap:
+        _save_snapshot(snap)
     if finished:
         # killed workers may have left .tmp-* files behind (outside the lock)
         storage.remove_temp_files(job["output"])
@@ -438,15 +449,94 @@ def heartbeat():
     return jsonify({"ok": True, "cancel": cancel})
 
 
+def _workers_list(t):
+    return [{"worker_id": wid, "status": w["status"],
+             "last_seen_age": round(t - w["last_seen"], 1),
+             "task": "/".join(w["task"]) if w["task"] else None}
+            for wid, w in sorted(workers.items())]
+
+
 @app.get("/workers")
 def list_workers():
     with lock:
+        return jsonify({"workers": _workers_list(now())})
+
+
+# ----------------------------------------------------------- visualization
+ATTEMPT_FIELDS = ("attempt_id", "worker", "started", "finished", "progress", "backup", "status")
+
+
+def _snapshot(job):
+    """JSON-safe copy of a job for /api/state and state.json. Call under `lock`;
+    copies everything, so the result can be used after the lock is released."""
+    def task(t):
+        s = {"task_id": t["task_id"], "type": t["type"], "index": t["index"],
+             "state": t["state"],
+             "stats": {k: list(v) if isinstance(v, list) else v for k, v in t["stats"].items()},
+             "attempts": [{k: a[k] for k in ATTEMPT_FIELDS} for a in t["attempts"]]}
+        if t["type"] == "map":
+            s["split_bytes"] = sum(seg["end"] - seg["start"] for seg in t["extra"]["split"])
+        return s
+    return {"id": job["id"], "input": job["input"], "output": job["output"],
+            "M": job["num_maps"], "R": job["num_reduces"],
+            "use_combiner": job["use_combiner"], "use_backup": job["use_backup"],
+            "status": job["status"], "error": job["error"],
+            "submitted": job["submitted"], "finished": job["finished"],
+            "tasks": [task(t) for t in job["map_tasks"] + job["reduce_tasks"]]}
+
+
+def _save_snapshot(snap):
+    """Persist a finished job (outside the lock) so it survives a boss restart."""
+    try:
+        storage.write_atomic(f"jobs/{snap['id']}/state.json", json.dumps(snap))
+    except OSError as e:
+        print(f"could not save state of job {snap['id']}: {e}", flush=True)
+
+
+def load_history():
+    """Load the latest HISTORY state.json files (newest by write time) into `history`."""
+    global history
+    found = []
+    try:
+        names = os.listdir(storage.resolve("jobs"))
+    except OSError:
+        names = []
+    for n in names:
+        path = storage.resolve(f"jobs/{n}/state.json")
+        try:
+            found.append((os.path.getmtime(path), path))
+        except OSError:
+            pass
+    snaps = []
+    for _, path in sorted(found)[-HISTORY:]:
+        try:
+            with open(path, encoding="utf-8") as f:
+                snaps.append(json.load(f))
+        except (OSError, ValueError):
+            pass
+    snaps.sort(key=lambda s: s.get("submitted") or 0)
+    with lock:
+        history = snaps
+
+
+@app.get("/api/state")
+def api_state():
+    """Workers plus the current job and up to 5 previous ones (oldest first)."""
+    with lock:
         t = now()
-        return jsonify({"workers": [
-            {"worker_id": wid, "status": w["status"],
-             "last_seen_age": round(t - w["last_seen"], 1),
-             "task": "/".join(w["task"]) if w["task"] else None}
-            for wid, w in sorted(workers.items())]})
+        ws = _workers_list(t)
+        live = [_snapshot(j) for j in list(jobs.values())[-HISTORY:]]
+        hist = list(history)
+    merged = {s["id"]: s for s in hist}
+    merged.update({s["id"]: s for s in live})             # live wins on equal id
+    shown = sorted(merged.values(), key=lambda s: s.get("submitted") or 0)[-HISTORY:]
+    return jsonify({"now": t, "workers": ws, "jobs": shown})
+
+
+@app.get("/visualization")
+@app.get("/visualization/")
+def visualization():
+    return send_from_directory(VISUALIZATION_DIR, "index.html")
 
 
 def _task_progress(task):
@@ -501,5 +591,6 @@ def job_status(job_id):
 
 if __name__ == "__main__":
     storage.prepare_root()
+    load_history()
     threading.Thread(target=_monitor, daemon=True).start()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), threaded=True)

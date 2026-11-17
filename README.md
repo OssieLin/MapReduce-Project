@@ -3,8 +3,40 @@
 A small MapReduce system that runs on one VM with Docker Compose: one **boss**
 and four **workers** (1 CPU each). See `design.md` for the design.
 
-Follow steps 1 to 6 to submit a MapReduce job.
+### Requirements
 
+- Docker with Docker Compose. Jobs run correctly on any such machine, including a Mac.
+- To reproduce the benchmark numbers, use a Linux machine or VM with **at least 4
+  CPUs that nothing else is using** (we used a 4-vCPU Xeon VM; see
+  [eval/benchmark.md](eval/benchmark.md#testing-machine)). Each worker is capped at
+  1 CPU. On fewer cores, or on a busy laptop,
+  workers compete for CPU time and runtimes become slower and noisy.
+
+
+Follow steps 0 to 6 to submit a MapReduce job.
+
+
+## 0. Setup
+
+The cluster and its shared storage live on one machine (we use a Linux VM).
+Clone the repo **on that machine**; steps 1–6 all run there:
+```bash
+git clone https://github.com/OssieLin/Mini-MapReduce.git
+cd Mini-MapReduce
+```
+That one clone is all you need.
+
+**Optional: use your laptop too.** The boss only listens on the VM's localhost,
+so first forward its port over SSH (leave this running):
+```bash
+ssh -N -L 5050:localhost:5050 <user>@<vm>
+```
+- **Watch jobs:** open http://localhost:5050/visualization in the laptop's
+  browser. No clone needed.
+- **Submit jobs:** this needs a second clone on the laptop, plus step 2 there,
+  because `./submit` reads the job file locally. Input data must already be on
+  the VM (`./upload_data` copies into the local `./shared`, so always run it on
+  the VM), and output appears in the VM's `./shared/output`.
 
 ## 1. What to build
 ```bash
@@ -17,7 +49,7 @@ Python 3.11+ and `requests`:
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt   # or: pip install requests
+pip install -r requirements.txt   
 ```
 
 ## 3. How to start the cluster
@@ -91,6 +123,17 @@ The lines are split across the `part-<r>.jsonl` files; `_SUCCESS` marks completi
 **Use a new `-o` for every run** (or `rm -rf` the old one first): the boss does not
 check, and leftover `part-*` files from an earlier run would duplicate keys.
 
+
+## 7. View the visualization
+Open **http://localhost:5050/visualization** in a browser while the cluster is running
+(use your own port if you changed it; see [Ports and storage](#ports-and-storage)).
+It shows the current job live, from the boss splitting the input through map, the
+intermediate files, reduce and the output files on disk, with each worker's partitions.
+Press **Play** on a finished job to replay it from 0 s. The **Counters**, **Combiner** and
+**Previous jobs** buttons under the title open details below the workflow; "How to read this
+diagram" explains P, R and the other symbols. Without a cluster, open
+http://localhost:5050/visualization?demo=1 (or the file visualization/index.html with
+?demo=1) to see sample data.
 
 And that's how you submit a job in this Mini-MapReduce! Feel free to read more of the following for customization and notes.
 
@@ -253,11 +296,13 @@ normal 4-worker cluster running.
  
 ## Layout
 - `mapreduce/boss.py` – Flask boss: job/task state, scheduling, heartbeat timeouts, backups;
-  `/submit_job`, `/get_task`, `/task_done`, `/heartbeat`, `/job/<id>`, `/workers`
+  `/submit_job`, `/get_task`, `/task_done`, `/heartbeat`, `/job/<id>`, `/workers`,
+  `/api/state` (jobs for the visualization), `/visualization` (serves the page)
 - `mapreduce/worker.py` – pull loop; map (+ combiner) and reduce tasks; heartbeat thread
 - `mapreduce/common.py` – partitioning, byte-range splitting, CSV parsing, job loading
 - `mapreduce/storage.py` – shared-storage helpers (atomic writes)
 - `upload_data`, `submit` – client CLIs
+- `visualization/index.html` – live workflow page served by the boss at `/visualization` (`?demo=1` for sample data)
 - `docker-compose.straggler.yml` – override that slows worker4 down
 - `eval/` – `experiments.py` (all experiments and plots), `baseline.py` (single-process reference), `results/`
 - `tests/` – `python3 -m pytest -q` (combiner, failure handling, backups)

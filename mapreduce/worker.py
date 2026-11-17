@@ -154,13 +154,15 @@ def run_map(task):
 
     # Spill partitioned intermediate data to shared storage
     base = f"jobs/{task['job_id']}/intermediate"
-    nbytes = 0
+    part_bytes, part_records = [], []           # per reduce partition, for the visualization
     for r in range(R):
         with storage.atomic_open(f"{base}/map-{m}-part-{r}.jsonl") as f:
             lines = [json.dumps([k, v]) + "\n" for k, v in buffers[r]]
             f.writelines(lines)
-            nbytes += sum(map(len, lines))      # json.dumps output is ASCII: chars == bytes
-    stats["intermediate_bytes"] = nbytes
+            part_bytes.append(sum(map(len, lines)))  # json.dumps output is ASCII: chars == bytes
+            part_records.append(len(lines))
+    stats.update(intermediate_bytes=sum(part_bytes), part_bytes=part_bytes,
+                 part_records=part_records)
     return stats
 
 

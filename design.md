@@ -105,7 +105,7 @@ The combiner emits `(sum, count)` pairs rather than averages, because averages a
 
 We replicate the **master/worker architecture** from the MapReduce paper (the figure in our brainstorm): a single boss (master) assigns map and reduce tasks to workers, and workers read and write data through shared storage.
 
-![architecture](https://github.com/OssieLin/MapReduce-Project/blob/main/architecture.png)
+![architecture](https://github.com/OssieLin/Mini-MapReduce/blob/main/architecture.png)
 
 | Path | Mechanism |
 |---|---|
