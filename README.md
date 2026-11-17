@@ -13,7 +13,7 @@ and four **workers** (1 CPU each). See `design.md` for the design.
   workers compete for CPU time and runtimes become slower and noisy.
 
 
-Follow steps 0 to 6 to submit a MapReduce job.
+Follow steps 0 to 6 to submit a MapReduce job, then step 7 to monitor it.
 
 
 ## 0. Setup
@@ -24,19 +24,8 @@ Clone the repo **on that machine**; steps 1–6 all run there:
 git clone https://github.com/OssieLin/Mini-MapReduce.git
 cd Mini-MapReduce
 ```
-That one clone is all you need.
-
-**Optional: use your laptop too.** The boss only listens on the VM's localhost,
-so first forward its port over SSH (leave this running):
-```bash
-ssh -N -L 5050:localhost:5050 <user>@<vm>
-```
-- **Watch jobs:** open http://localhost:5050/visualization in the laptop's
-  browser. No clone needed.
-- **Submit jobs:** this needs a second clone on the laptop, plus step 2 there,
-  because `./submit` reads the job file locally. Input data must already be on
-  the VM (`./upload_data` copies into the local `./shared`, so always run it on
-  the VM), and output appears in the VM's `./shared/output`.
+That one clone is all you need. To also watch or submit from your laptop, see
+[Watching from your laptop](#watching-from-your-laptop) in step 7.
 
 ## 1. What to build
 ```bash
@@ -55,7 +44,6 @@ pip install -r requirements.txt
 ## 3. How to start the cluster
 ```bash
 docker compose up -d          # boss on localhost:5050, worker1..worker4
-docker compose logs -f        # optional
 ```
 Shared storage is `./shared` on the host, `/shared` in every container.
 To use a different port or storage folder, see [Ports and storage](#ports-and-storage).
@@ -123,26 +111,20 @@ The lines are split across the `part-<r>.jsonl` files; `_SUCCESS` marks completi
 **Use a new `-o` for every run** (or `rm -rf` the old one first): the boss does not
 check, and leftover `part-*` files from an earlier run would duplicate keys.
 
+## 7. Job monitoring
+These views are most useful once a job from step 6 is running or finished. All
+commands below run on the VM unless a heading says otherwise.
 
-## 7. View the visualization
-Open **http://localhost:5050/visualization** in a browser while the cluster is running
-(use your own port if you changed it; see [Ports and storage](#ports-and-storage)).
-It shows the current job live, from the boss splitting the input through map, the
-intermediate files, reduce and the output files on disk, with each worker's partitions.
-Press **Play** on a finished job to replay it from 0 s. The **Counters**, **Combiner** and
-**Previous jobs** buttons under the title open details below the workflow; "How to read this
-diagram" explains P, R and the other symbols. Without a cluster, open
-http://localhost:5050/visualization?demo=1 (or the file visualization/index.html with
-?demo=1) to see sample data.
+### Logs
+```bash
+docker compose logs -f | grep -v -E '/get_task|/heartbeat'
+```
+Idle workers ask the boss for work about three times a second, so the raw
+`docker compose logs -f` is mostly `POST /get_task ... 200` lines; that is normal.
+The filter above hides them. During a job, workers print `running <job_id>/<task_id>`,
+and any traceback shows up here too.
 
-And that's how you submit a job in this Mini-MapReduce! Feel free to read more of the following for customization and notes.
-
-
----
-
-
-
-## Inspecting a job
+### Inspecting a job
 ```bash
 curl -s localhost:5050/job/<id>  # status, per-task attempts, counters, backup stats
 curl -s localhost:5050/workers   # each worker's status, last-seen age, current task
@@ -150,6 +132,43 @@ curl -s localhost:5050/workers   # each worker's status, last-seen age, current 
 `counters` is summed over finished tasks: `map_input_records`, `map_output_records`,
 `combine_input_records`, `combine_output_records`, `intermediate_bytes`, `shuffle_bytes`,
 `reduce_input_records`, `reduce_input_groups`, `reduce_output_records`, `skipped_rows`.
+
+### Watching from your laptop
+The cluster must already be running on the VM (step 3), and
+`curl -s localhost:5050/workers` there should print JSON. The boss only listens on
+the VM's localhost, so forward its port over SSH from the laptop (leave this running):
+```bash
+ssh -N -L 5050:localhost:5050 <user>@<vm>
+```
+The second `5050` is the boss's host port on the VM. If you changed it (see
+[Ports and storage](#ports-and-storage)), use that number instead.
+- **Watch jobs:** open http://localhost:5050/visualization in the laptop's
+  browser. No clone needed. The `curl` commands above also work from the laptop.
+- **Submit jobs:** this needs a second clone on the laptop, plus step 2 there,
+  because `./submit` reads the job file locally. Input data must already be on
+  the VM (`./upload_data` copies into the local `./shared`, so always run it on
+  the VM), and output appears in the VM's `./shared/output`.
+
+If `ssh` prints `bind [127.0.0.1]:5050: Address already in use`, something on the
+laptop (usually an earlier tunnel) already holds port 5050. Stop it, or pick another
+local port, then use that port in the laptop's URLs and in `BOSS_URL`:
+```bash
+lsof -nP -iTCP:5050 -sTCP:LISTEN     # shows the PID holding the port
+kill <PID>                           # if it's an old ssh tunnel
+# or forward a different local port instead:
+ssh -N -L 5051:localhost:5050 <user>@<vm>   # then http://localhost:5051/visualization
+```
+If browsing gives `channel N: open failed: connect failed: Connection refused`, the
+tunnel is fine, but nothing listens on that port on the VM. Check `docker compose ps -a`
+on the VM (see [Debug](#debug)).
+
+And that's how you submit and monitor a job in this Mini-MapReduce! Feel free to read
+more of the following for customization and notes.
+
+
+---
+
+
  
 ## Ports and storage
 By default the boss is published on host port **5050**, and `./submit` and
@@ -290,6 +309,8 @@ normal 4-worker cluster running.
 | `submit` fails with a JSON or `403` error | `curl -i http://localhost:5050/job/x` should return `{"error": "unknown job"}` | `BOSS_URL` points at something else: `unset BOSS_URL`, or set it to the boss's port (see [Ports and storage](#ports-and-storage)) |
 | `service "boss" is not running` | `docker compose ps -a` shows boss as `Created` | Host port 5050 is taken: pick another port as in [Ports and storage](#ports-and-storage) |
 | `cannot reach boss` | `docker compose ps` | `docker compose up -d` |
+| `bind [127.0.0.1]:5050: Address already in use` (laptop `ssh -L`) | `lsof -nP -iTCP:5050 -sTCP:LISTEN` on the laptop | Kill the old tunnel, or forward another local port, e.g. `-L 5051:localhost:5050` |
+| `channel N: open failed: connect failed: Connection refused` (laptop `ssh -L`) | On the VM: `docker compose ps -a`, `docker compose port boss 5000` | Start the cluster, or forward the port the boss is actually published on |
 | `zsh: no matches found: shared/output/.../part-*.jsonl` | the job never finished | Read `submit`'s error message |
 | Duplicate keys in `cat part-*.jsonl` | `ls shared/output/<name>` shows more `part-*` files than `-r` | The output directory was reused; delete it or pick a new `-o` |
 | Job paused at `maps k/M` after a worker died | `docker compose logs boss \| grep failed`, `curl -s localhost:5050/workers` | Expected: the task returns to PENDING after `HEARTBEAT_TIMEOUT` (10 s) and is rerun |
