@@ -1,0 +1,11 @@
+config,trial,seconds,mb_per_s,intermediate_bytes,reexecutions,backups_launched,backups_won,wasted_seconds,matches,identical,job_id
+combiner-off,1,6.029,18.282,73681907,0,0,0,0,True,True,6fbaf2af
+combiner-on,1,1.943,56.728,65582,0,0,0,0,True,False,eab11d9c
+combiner-off,2,6.367,17.311,73681907,0,0,0,0,True,True,2d17985b
+combiner-on,2,2.123,51.918,65582,0,0,0,0,True,False,423e805d
+combiner-off,3,6.405,17.209,73681907,0,0,0,0,True,True,d40adf9d
+combiner-on,3,2.075,53.119,65582,0,0,0,0,True,False,5ab9caa6
+combiner-off,4,6.275,17.565,73681907,0,0,0,0,True,True,6079a184
+combiner-on,4,1.944,56.699,65582,0,0,0,0,True,False,78bdb819
+combiner-off,5,6.358,17.336,73681907,0,0,0,0,True,True,344a212e
+combiner-on,5,2.04,54.03,65582,0,0,0,0,True,False,cce37f75

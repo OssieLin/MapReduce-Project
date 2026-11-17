@@ -1,0 +1,8 @@
+# Straggler injection: worker4 gets a quarter of a CPU (4x slower).
+# usage: docker compose -f docker-compose.yml -f docker-compose.straggler.yml up -d
+# Optionally also slow every row: SLOW_MS_PER_ROW=0.05 docker compose -f ... up -d
+services:
+  worker4:
+    cpus: "0.25"
+    environment:
+      SLOW_MS_PER_ROW: ${SLOW_MS_PER_ROW:-0}

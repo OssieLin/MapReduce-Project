@@ -81,10 +81,13 @@ def iter_rows(seg, stats=None):
             text = line.decode("utf-8").rstrip("\r\n")
             if not text.strip():
                 continue
-            try:
-                fields = next(csv.reader([text]))
-            except (csv.Error, StopIteration):
-                fields = None
+            if '"' in text or "\r" in text or "\x00" in text:
+                try:
+                    fields = next(csv.reader([text]))
+                except (csv.Error, StopIteration):
+                    fields = None
+            else:                   # no quoting: identical to csv.reader, ~5x cheaper
+                fields = text.split(",")
             if fields is None or len(fields) != len(cols):
                 if stats is not None:
                     stats["skipped_rows"] = stats.get("skipped_rows", 0) + 1
@@ -93,14 +96,16 @@ def iter_rows(seg, stats=None):
 
 
 # --------------------------------------------------------------------- jobs
-def check_job_source(source):
-    """Static check (no execution) that the job defines map_fn and reduce_fn."""
+def check_job_source(source, require_combiner=False):
+    """Static check (no execution) that the job defines map_fn and reduce_fn
+    (and combine_fn if require_combiner)."""
     try:
         tree = ast.parse(source)
     except SyntaxError as e:
         raise ValueError(f"job file has a syntax error: {e}")
     names = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
-    missing = [n for n in ("map_fn", "reduce_fn") if n not in names]
+    required = ("map_fn", "reduce_fn") + (("combine_fn",) if require_combiner else ())
+    missing = [n for n in required if n not in names]
     if missing:
         raise ValueError("job file must define: " + ", ".join(missing))
 

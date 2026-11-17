@@ -105,7 +105,7 @@ The combiner emits `(sum, count)` pairs rather than averages, because averages a
 
 We replicate the **master/worker architecture** from the MapReduce paper (the figure in our brainstorm): a single boss (master) assigns map and reduce tasks to workers, and workers read and write data through shared storage.
 
-![architecture](https://github.com/OssieLin/MapReduce-Project/blob/main/architecture.png)
+![architecture](https://github.com/OssieLin/Mini-MapReduce/blob/main/architecture.png)
 
 | Path | Mechanism |
 |---|---|
@@ -192,14 +192,32 @@ To bound memory, the map task also combines whenever its buffer exceeds a size l
 
 The boss must detect a worker that dies mid-job and make sure its work is redone elsewhere so the final output is still correct.
 
-**Detection:** each worker sends a heartbeat to the boss every few seconds while running a task. If the boss records a `RUNNING` task whose worker has missed heartbeats for longer than a timeout (e.g. 10 s), it marks the worker as failed.
+**Detection:** each worker's background thread sends a heartbeat (`POST /heartbeat`) every `HEARTBEAT_SECS` (default 2 s) for the life of the process, idle or busy; every worker call refreshes its `last_seen`. A monitor thread in the boss checks once per second: a `RUNNING` attempt (see §8b) is orphaned when `now - max(attempt.started, worker.last_seen) > HEARTBEAT_TIMEOUT` (default 10 s), which also catches a worker that dies before its first heartbeat. The attempt becomes `FAILED` and its worker is marked failed; the task goes back to `PENDING` unless another attempt of it (a backup) is still running. Since a worker runs one task at a time, a `/get_task` from a worker that still has a `RUNNING` attempt (it restarted, or its `task_done` was lost) fails that attempt immediately.
 
 **Recovery:**
 - Tasks assigned to the failed worker go back to `PENDING` and are picked up by the remaining workers.
-- Late results from a worker that was wrongly presumed dead are harmless: output filenames are deterministic and written with atomic rename, so duplicate execution just overwrites a file with identical contents. The boss ignores a `task_done` for a task that is already `DONE`.
+- Late results from a worker that was wrongly presumed dead are harmless: output filenames are deterministic and written with atomic rename, so duplicate execution just overwrites a file with identical contents. The first successful `task_done` marks the task `DONE` (even if it was reassigned meanwhile); later ones are ignored. A failure reported by a worker that no longer owns the task is ignored and does not fail the job.
+- Leftover `.tmp-*` files from killed writers are deleted when the job reaches `DONE`.
+- If every worker is dead the job simply waits. `GET /workers` and the per-task `attempts` / job `reexecutions` fields in `GET /job/<id>` show what happened.
 - Unlike the original paper, **completed map tasks of a failed worker do not need to be re-run**, because our intermediate files are on shared storage rather than the worker's local disk.
 
 **Demo and test:** run the job normally and save the output. Run it again and `docker kill` one worker halfway through. The job should still finish, with output identical to the first run.
+
+## 8b. Special Feature 3: Backup Tasks for Stragglers
+
+Following the MapReduce paper (§3.6), a job submitted with `-B` may run a second copy of a slow task near the end of a phase; whichever copy finishes first wins.
+
+**Attempts.** Each task keeps a list of attempts `{attempt_id "map-3.a1", worker, started, last_heartbeat, progress, backup, status RUNNING|WON|CANCELLED|LOST|FAILED, finished}`. The task is `RUNNING` while any attempt runs and `DONE` once one attempt succeeds. `attempt_id` travels in the task payload, every heartbeat and `task_done`.
+
+**Progress.** Heartbeats carry progress in [0, 1]: for a map, split bytes consumed / split bytes; for a reduce, `0.5 * files read / M + 0.5 * keys reduced / unique keys`. The worker updates it every 1000 records (every row with `SLOW_MS_PER_ROW`).
+
+**When to back up** (`pick_backup`, a pure function called from `/get_task` only when the phase has no `PENDING` tasks): for each task with exactly one running attempt, `est_remaining = elapsed * (1 - p) / p`. It is a candidate if at least `BACKUP_MIN_DONE` (25 %) of the phase is DONE, `elapsed > BACKUP_SLOWDOWN (1.5) x median DONE duration` and `> BACKUP_MIN_SECONDS (2)`, `est_remaining > median` (a fresh copy could still win), it isn't on the asking worker, it has no backup yet, and the job is under `max(1, ceil(BACKUP_MAX_FRACTION (10 %) x tasks))` backups. The candidate with the largest `est_remaining` wins.
+
+**First finisher wins.** The first successful `task_done` marks its attempt `WON`, the task `DONE`, and every other running attempt `CANCELLED`; the phase barrier runs once. A cancelled copy that finishes anyway is recorded as `LOST` and ignored. A failure of one copy while another runs doesn't fail the job; only the last running attempt failing does. Job counters come from the winning attempt only. Correctness relies on the same property as failure handling: deterministic user functions, deterministic file names and atomic rename, so both copies write identical files.
+
+**Cancellation.** A heartbeat reply carries `cancel: true` for a `CANCELLED`/`LOST`/`FAILED` attempt. The worker sets an event that the task loop checks every 1000 records; it raises `TaskCancelled`, `atomic_open` deletes the temp file, and the worker goes straight back to `/get_task` without `task_done`.
+
+**Evaluation.** `docker-compose.straggler.yml` gives worker4 a quarter of a CPU. `eval/backup_experiment.sh` runs 3 trials of {no straggler, straggler} x {-B off, -B on} with `-m 16 -r 4`; `GET /job/<id>` reports `backups_launched`, `backups_won` and `wasted_seconds`, and `shared/jobs/<id>/events.jsonl` has one line per attempt start/finish for Gantt charts. `eval/experiments.py --straggler` runs 3 trials of {no straggler, straggler} x {-B off, -B on} with `-m 16 -r 4` and plots them.
 
 ## 9. Task Lifecycle
 
@@ -240,7 +258,7 @@ We test **correctness** and **performance** (latency and throughput).
 
 ## 12. Performance Evaluation
 
-All experiments run on the 4-CPU VM using a generated CSV dataset (millions of rows). Each configuration is run 3 times and we plot the mean with error bars. The boss logs timestamps (job submit, task start/end, job done) so plots are generated reproducibly by `eval/plot.py`.
+All experiments run on the 4-CPU VM using a generated CSV dataset (millions of rows). Each configuration is run 3 times and we plot the mean with error bars. The boss logs timestamps (job submit, task start/end, job done) so plots are generated reproducibly by `eval/experiments.py` (one flag per experiment below, `--all` for everything; `--plot-only` redraws from the saved CSVs).
 
 **Metrics:** *latency* = end-to-end job completion time; *throughput* = input MB processed per second.
 
@@ -251,7 +269,7 @@ All experiments run on the 4-CPU VM using a generated CSV dataset (millions of r
 | B2 | Same, with a nearly-unique-key job as a control | same bars | combiner helps little when keys are not repeated (honest data point) |
 | C | **Scaling:** 1, 2, 3, 4 active workers | line chart of runtime and throughput vs. workers, with an ideal-speedup line | work is truly distributed across CPU-limited workers |
 | D | **Fault tolerance:** normal run vs. run with a worker killed halfway | runtime bars, plus a check that outputs are byte-identical | failures are detected, tasks are reassigned, and the output stays correct (with the extra runtime cost shown) |
-| E | **Task granularity:** vary `num_maps` (1, 2, 4, 8, 16, 32) | line chart of runtime | load-balancing benefit vs. per-task overhead |
+| E | **Task granularity:** vary `num_maps` (1, 2, 4, 8, 16, 32; `num_reduces` = 4), then `num_reduces` (1, 2, 4, 8, 16; `num_maps` = 16) | two line charts of runtime | load-balancing benefit vs. per-task overhead |
 
 ## 13. Repo Layout
 

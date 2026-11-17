@@ -1,0 +1,11 @@
+config,trial,seconds,mb_per_s,intermediate_bytes,reexecutions,backups_launched,backups_won,wasted_seconds,matches,identical,job_id
+mapreduce,1,6.294,17.512,73681907,0,0,0,0,True,True,a09aaa4c
+single-process,1,8.731,12.624,0,0,0,0,0,True,True,
+mapreduce,2,6.449,17.091,73681907,0,0,0,0,True,True,10d18db2
+single-process,2,8.287,13.301,0,0,0,0,0,True,True,
+mapreduce,3,6.161,17.89,73681907,0,0,0,0,True,True,68d440b7
+single-process,3,8.576,12.852,0,0,0,0,0,True,True,
+mapreduce,4,6.464,17.052,73681907,0,0,0,0,True,True,3468c5dd
+single-process,4,8.581,12.845,0,0,0,0,0,True,True,
+mapreduce,5,6.526,16.89,73681907,0,0,0,0,True,True,2bf4838c
+single-process,5,8.487,12.987,0,0,0,0,0,True,True,
