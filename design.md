@@ -269,7 +269,7 @@ All experiments run on the 4-CPU VM using a generated CSV dataset (millions of r
 | B2 | Same, with a nearly-unique-key job as a control | same bars | combiner helps little when keys are not repeated (honest data point) |
 | C | **Scaling:** 1, 2, 3, 4 active workers | line chart of runtime and throughput vs. workers, with an ideal-speedup line | work is truly distributed across CPU-limited workers |
 | D | **Fault tolerance:** normal run vs. run with a worker killed halfway | runtime bars, plus a check that outputs are byte-identical | failures are detected, tasks are reassigned, and the output stays correct (with the extra runtime cost shown) |
-| E | **Task granularity:** vary `num_maps` (1, 2, 4, 8, 16, 32) | line chart of runtime | load-balancing benefit vs. per-task overhead |
+| E | **Task granularity:** vary `num_maps` (1, 2, 4, 8, 16, 32; `num_reduces` = 4), then `num_reduces` (1, 2, 4, 8, 16; `num_maps` = 16) | two line charts of runtime | load-balancing benefit vs. per-task overhead |
 
 ## 13. Repo Layout
 

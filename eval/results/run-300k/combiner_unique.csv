@@ -1,3 +1,0 @@
-config,trial,seconds,mb_per_s,intermediate_bytes,reexecutions,backups_launched,backups_won,wasted_seconds,matches,identical,job_id
-combiner-off,1,2.107,5.229,7739946,0,0,0,0,True,True,f3e61e28
-combiner-on,1,2.24,4.919,7719860,0,0,0,0,True,False,98f5c7ac

@@ -1,9 +1,0 @@
-config,trial,seconds,mb_per_s,intermediate_bytes,reexecutions,backups_launched,backups_won,wasted_seconds,matches,identical,job_id,keys,combiner,rows
-keys=10+combiner-off,1,4.29,8.18,22893826,0,0,0,0,True,True,a6b66275,10,False,1000000
-keys=10+combiner-on,1,2.272,15.446,6303,0,0,0,0,True,False,f1be5a5b,10,True,1000000
-keys=1000+combiner-off,1,4.838,8.017,26785369,0,0,0,0,True,True,ed44551c,1000,False,1000000
-keys=1000+combiner-on,1,2.264,17.131,611942,0,0,0,0,True,False,cf665d2c,1000,True,1000000
-keys=100000+combiner-off,1,6.468,5.997,26789426,0,0,0,0,True,True,7921d380,100000,False,1000000
-keys=100000+combiner-on,1,5.254,7.383,20676770,0,0,0,0,True,False,a68deb84,100000,True,1000000
-keys=1000000+combiner-off,1,6.759,5.739,26788371,0,0,0,0,True,True,92d0e07c,1000000,False,1000000
-keys=1000000+combiner-on,1,8.303,4.672,26069197,0,0,0,0,True,False,99705876,1000000,True,1000000

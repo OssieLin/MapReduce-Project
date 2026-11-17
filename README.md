@@ -192,6 +192,18 @@ docker compose up -d          # back to 4 equal workers
   jobs are forgotten.
 - Experiment: `python3 eval/experiments.py --straggler` (see [Experiments](#experiments)).
 
+## Benchmark
+We benchmarked this implementation on a 4-vCPU Intel Xeon Linux VM (boss + 4 one-CPU
+workers, 3M rows ≈ 110 MB, 16 map / 4 reduce tasks, 5 trials each). Tested:
+- **speed vs. a single process** (1.34× faster), **scaling** over 1–4 workers (3.44× at 4), and **task granularity**;
+- **the combiner** with repeated keys (3.1× faster), nearly unique keys, and across key counts;
+- **worker failures:** kills in each phase, a pause past the timeout, and a quick restart;
+- **backup tasks** against a slow worker (36.6 s → 11.0 s).
+
+All 175 runs produced the correct output. See **[eval/benchmark.md](eval/benchmark.md)**
+for the machine, the setup, every plot with its interpretation, and how to run your
+own variations.
+
 ## Experiments
 `eval/experiments.py` runs the evaluation from the host: it generates its own datasets
 under `shared/input/eval/`, drives the cluster (stopping, killing and pausing containers
@@ -205,7 +217,7 @@ as needed), checks every run's output against a reference run, and writes
 | `--combiner-unique` | B2. same, avg temp per station (nearly unique keys: `examples/avg_temp_by_station.py`) | same |
 | `--scaling` | C. 1, 2, 3, 4 active workers | runtime and throughput vs. workers, with ideal lines |
 | `--fault` | D. normal vs. worker2 killed halfway through the map phase | runtime bars; byte-identical check |
-| `--granularity` | E. `num_maps` 1, 2, 4, 8, 16, 32 | runtime vs. num_maps |
+| `--granularity` | E. `num_maps` 1–32 (4 reducers), then `num_reduces` 1–16 (16 maps) | runtime vs. num_maps and vs. num_reduces |
 | `--straggler` | {no straggler, worker4 at 1/4 CPU} × {`-B` off, on} | grouped bars + Gantt of a backup run |
 | `--combiner-sweep` | combiner off/on on datasets with 10 … 1M distinct keys | intermediate MB and runtime vs. keys |
 | `--failures` | no failure / kill in map / kill in reduce / pause > timeout / kill + restart | runtime bars with re-runs + Gantt |

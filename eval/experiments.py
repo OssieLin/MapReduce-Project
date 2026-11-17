@@ -40,7 +40,8 @@ STRAGGLER = BASE + ["docker-compose.straggler.yml"]
 AVG_CITY = "examples/avg_temp.py"
 AVG_STATION = "examples/avg_temp_by_station.py"
 M, R = 16, 4                                   # default num_maps / num_reduces
-GRANULARITY = [1, 2, 4, 8, 16, 32]
+GRANULARITY = [1, 2, 4, 8, 16, 32]               # num_maps swept, num_reduces = R
+GRANULARITY_R = [1, 2, 4, 8, 16]                 # num_reduces swept, num_maps = M
 SWEEP_KEYS = [10, 1_000, 100_000, 1_000_000]
 FAILURE_SCENARIOS = ["none", "kill-map", "kill-reduce", "pause", "restart"]
 
@@ -340,20 +341,24 @@ def exp_fault(args):
 
 
 def exp_granularity(args):
-    """E: num_maps 1, 2, 4, 8, 16, 32."""
+    """E: num_maps 1..32 (num_reduces 4), then num_reduces 1..16 (num_maps 16)."""
     inp = big(args)
     mb, res = input_mb(inp), Results("granularity", args)
     start_cluster(inp)
     for t in range(1, args.trials + 1):
         for m in GRANULARITY:
             s, lines = run_job(inp, AVG_CITY, maps=m, tag=f"E{m}")
-            res.add(f"maps={m}", t, s, mb, lines, num_maps=m)
+            res.add(f"maps={m}", t, s, mb, lines, num_maps=m, num_reduces=R)
+        for r in GRANULARITY_R:
+            s, lines = run_job(inp, AVG_CITY, reduces=r, tag=f"ER{r}")
+            res.add(f"reduces={r}", t, s, mb, lines, num_maps=M, num_reduces=r)
 
 
 def exp_straggler(args):
     """Backup tasks: {no straggler, straggler (worker4 at 1/4 CPU)} x {-B off, -B on}."""
     inp = big(args)
     mb, res = input_mb(inp), Results("straggler", args)
+    slow = float(os.environ.get("SLOW_MS_PER_ROW", 0))     # passed to worker4 by compose
     try:
         for strag, files in (("no", BASE), ("yes", STRAGGLER)):
             start_cluster(inp, files)       # switching files recreates every container
@@ -361,7 +366,9 @@ def exp_straggler(args):
                 for on in (False, True):
                     s, lines = run_job(inp, AVG_CITY, backup=on, tag="S")
                     res.add(f"straggler-{strag}+backup-{'on' if on else 'off'}", t, s, mb, lines,
-                            straggler=strag == "yes", backup=on)
+                            straggler=strag == "yes", backup=on,
+                            slow_ms_per_row=slow if strag == "yes" else 0,
+                            rows_per_map=args.rows // M)
     finally:
         compose("up", "-d")
         wait_cluster()
@@ -633,29 +640,60 @@ def plot_fault(rows, args):
           + f" · {reexec:.1f} tasks re-executed per killed run")
 
 
-def plot_granularity(rows, args):
-    plt = _plt()
-    st = summarize(rows)
-    ms = sorted({int(r["num_maps"]) for r in rows})
-    t = [st[f"maps={m}"] for m in ms]
-    fig, ax = plt.subplots(figsize=(6, 3.8))
-    ax.errorbar(ms, [m for m, _, _ in t], yerr=[s for _, s, _ in t], color=BLUE, linewidth=2,
+def _sweep(ax, st, prefix):
+    """Runtime line for configs '<prefix>=<n>', with the fastest point marked."""
+    ns = sorted(int(c.split("=")[1]) for c in st if c.startswith(prefix + "="))
+    t = [st[f"{prefix}={n}"] for n in ns]
+    ax.errorbar(ns, [m for m, _, _ in t], yerr=[s for _, s, _ in t], color=BLUE, linewidth=2,
                 marker="o", markersize=6, capsize=3, ecolor=MUTED)
-    best = min(range(len(ms)), key=lambda i: t[i][0])
+    best = min(range(len(ns)), key=lambda i: t[i][0])
     # below the lowest point (the line never goes there), aligned away from the
     # plot edges so it can't hit the axis labels
-    ha = "left" if best == 0 else "right" if best == len(ms) - 1 else "center"
-    ax.annotate(f"fastest: {t[best][0]:.1f}s", (ms[best], t[best][0] - t[best][1]),
+    ha = "left" if best == 0 else "right" if best == len(ns) - 1 else "center"
+    ax.annotate(f"fastest: {t[best][0]:.1f}s", (ns[best], t[best][0] - t[best][1]),
                 textcoords="offset points", xytext=(0, -10), ha=ha, va="top",
                 fontsize=9, color=INK)
     ax.set_xscale("log", base=2)
-    ax.set_xticks(ms, [str(m) for m in ms])
-    ax.set_xlabel("num_maps (num_reduces = 4)")
-    ax.set_ylabel("Job runtime (s)")
+    ax.set_xticks(ns, [str(n) for n in ns])
+    ax.minorticks_off()
     ax.set_ylim(bottom=0)
-    ax.set_title("Runtime vs. number of map tasks")
+
+
+def plot_granularity(rows, args):
+    plt = _plt()
+    st = summarize(rows)
+    both = any(c.startswith("reduces=") for c in st)
+    fig, axes = plt.subplots(1, 2 if both else 1, figsize=(10.5 if both else 6, 4), sharey=True,
+                             squeeze=False)
+    ax = axes[0][0]
+    _sweep(ax, st, "maps")
+    ax.set_xlabel("Number of map tasks (num_maps)")
+    ax.set_ylabel("Job runtime (s)")
+    ax.set_title(f"Varying map tasks, reduce tasks fixed at {R}", fontsize=10)
+    if both:
+        ax = axes[0][1]
+        _sweep(ax, st, "reduces")
+        ax.set_xlabel("Number of reduce tasks (num_reduces)")
+        ax.set_title(f"Varying reduce tasks, map tasks fixed at {M}", fontsize=10)
+        ax.tick_params(labelleft=True)
+        fig.suptitle(f"Runtime vs. number of tasks ({len(WORKERS)} workers)",
+                     x=0.01, ha="left", fontsize=12)
+    else:                                    # CSV from before the reduce sweep existed
+        ax.set_title(f"Runtime vs. number of map tasks (reduce tasks fixed at {R})")
     _save(plt, fig, args, "granularity", _spread(rows) + " · "
           + _check_note(rows))
+
+
+def _straggler_label(rows):
+    """How worker4 was slowed. CSVs from before slow_ms_per_row was recorded
+    fall back to SLOW_MS_PER_ROW in the plotting shell."""
+    slow = [r for r in rows if r.get("straggler") and "slow_ms_per_row" in r]
+    ms = (max(float(r["slow_ms_per_row"]) for r in slow) if slow
+          else float(os.environ.get("SLOW_MS_PER_ROW", 0)))
+    if not ms:
+        return "worker4 slowed to 1/4 CPU"
+    per_map = ms * int(slow[0]["rows_per_map"] if slow else 3_000_000 // M) / 1000
+    return (f"worker4: 1/4 CPU + {ms:g} ms sleep\nper input row (≈{per_map:.0f} s per map task)")
 
 
 def plot_straggler(rows, args):
@@ -667,7 +705,7 @@ def plot_straggler(rows, args):
         cfgs = [f"straggler-{s}+backup-{b}" for s in ("no", "yes")]
         _bars(ax, cfgs, st, color=color, x=[g + (i - 0.5) * (w + 0.02) for g in range(2)],
               width=w, label=label)
-    ax.set_xticks(range(2), ["4 equal workers", "worker4 slowed to 1/4 CPU"])
+    ax.set_xticks(range(2), ["4 equal workers", _straggler_label(rows)])
     ax.set_ylabel("Job runtime (s)")
     ax.set_title("Backup tasks with and without a slow worker")
     ax.legend(frameon=False, loc="upper left")
@@ -732,6 +770,12 @@ def plot_failures(rows, args):
               "Worker killed during the map phase: attempts per worker")
 
 
+# how an attempt that didn't count is drawn and explained
+WASTED = {"FAILED": ("xx", "no heartbeat for {t} s", "worker stopped sending heartbeats"),
+          "CANCELLED": ("///", "a copy finished first", "stopped, a copy finished first"),
+          "LOST": ("..", "a copy had already won", "finished after a copy won")}
+
+
 def gantt(job_id, args, name, title):
     """Attempts per worker over time, from shared/jobs/<id>/events.jsonl."""
     path = os.path.join(SHARED, "jobs", str(job_id), "events.jsonl")
@@ -739,17 +783,17 @@ def gantt(job_id, args, name, title):
         log(f"skip {name}: {path} not found")
         return
     plt = _plt()
+    from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
     attempts = {}
     for line in open(path):
         e = json.loads(line)
         attempts[e["attempt"]] = e                   # last event per attempt wins
-    from matplotlib.lines import Line2D
     t0 = min(e["start"] for e in attempts.values())
     t_end = max(e["end"] or e["start"] for e in attempts.values())
     span = t_end - t0
     workers = sorted({e["worker"] for e in attempts.values()})
-    fig, ax = plt.subplots(figsize=(9, 0.55 * len(workers) + 2.2))
+    fig, ax = plt.subplots(figsize=(12, max(0.75 * len(workers) + 1.6, 4.4)), dpi=150)
     by_task, tries = {}, {}
     for e in attempts.values():
         tries[e["task"]] = tries.get(e["task"], 0) + 1
@@ -757,12 +801,12 @@ def gantt(job_id, args, name, title):
         y = workers.index(e["worker"])
         start, end = e["start"] - t0, (e["end"] or t_end) - t0
         by_task.setdefault(e["task"], []).append((start, end, y, e))
-        wasted = e["status"] in ("CANCELLED", "LOST", "FAILED")
+        wasted = e["status"] in WASTED
         rerun = not e["backup"] and not e["attempt"].endswith(".a0")
         color = ORANGE if e["backup"] else AQUA if rerun else BLUE
-        ax.barh(y, end - start, left=start, height=0.62, color=SURFACE if wasted else color,
+        ax.barh(y, end - start, left=start, height=0.56, color=SURFACE if wasted else color,
                 edgecolor=color if wasted else SURFACE, linewidth=1.2 if wasted else 2,
-                hatch="///" if wasted else None)
+                hatch=WASTED[e["status"]][0] if wasted else None)
         # short task name (map-6 -> m6); the attempt number too for any repeated task
         kind, num = e["task"].split("-")
         label = kind[0] + num
@@ -770,8 +814,22 @@ def gantt(job_id, args, name, title):
             label += "." + e["attempt"].rsplit(".", 1)[1]
         if end - start < 0.008 * span * len(label):           # doesn't fit
             label = kind[0] + num if end - start > 0.03 * span else ""
-        ax.text(start + (end - start) / 2, y, label, ha="center", va="center",
-                fontsize=7, color=INK if wasted else "white")
+        ax.text(start + (end - start) / 2, y, label, ha="center", va="center", fontsize=7,
+                color=INK if wasted else "white",
+                bbox=dict(facecolor=SURFACE, edgecolor="none", pad=1) if wasted else None)
+        # spell out the outcome under every attempt of a task that ran more than once
+        if wasted:
+            note = f"{e['status']}: " + WASTED[e["status"]][1].format(t=f"{HEARTBEAT_TIMEOUT:.0f}")
+        elif tries[e["task"]] > 1 and e["status"] == "WON":
+            note = ("BACKUP won: output used" if e["backup"] else
+                    "RE-RUN finished: output used" if rerun else "ORIGINAL won: output used")
+        else:
+            note = ""
+        if note:
+            right = start > 0.55 * span
+            ax.text(end if right else start, y + 0.33, note, ha="right" if right else "left",
+                    va="top", fontsize=6.5, color=INK, zorder=5,
+                    bbox=dict(facecolor=SURFACE, edgecolor="none", pad=0.6))
     # arrow from the attempt that lost the task to the attempt that took it over:
     # a re-run starts when the failed attempt ends; a backup runs alongside the original
     for runs in by_task.values():
@@ -780,25 +838,48 @@ def gantt(job_id, args, name, title):
             if y == p_y:
                 continue
             down = 1 if y > p_y else -1
-            ax.annotate("", xy=(start, y - 0.33 * down),
-                        xytext=(start if e["backup"] else p_end, p_y + 0.33 * down),
+            ax.annotate("", xy=(start, y - 0.3 * down),
+                        xytext=(start if e["backup"] else p_end, p_y + 0.3 * down),
                         arrowprops=dict(arrowstyle="-|>", color=MUTED, lw=1.1, ls="--",
                                         shrinkA=0, shrinkB=0))
     ax.set_yticks(range(len(workers)), workers)
-    ax.invert_yaxis()
+    ax.set_ylim(len(workers) - 0.35, -0.5)          # inverted, room for the last notes
     ax.grid(axis="y", visible=False)
-    ax.set_xlabel("Seconds since first attempt  ·  m6 = map-6, r0 = reduce-0; "
-                  ".a0 = first attempt, .a1 = second")
+    ax.set_xlabel("Seconds since first attempt")
     ax.set_title(title)
-    ax.legend(handles=[Patch(color=BLUE, label="attempt"),
-                       Patch(color=AQUA, label="re-run after a failure"),
-                       Patch(color=ORANGE, label="backup attempt"),
-                       Patch(facecolor=SURFACE, edgecolor=MUTED, hatch="///",
-                             label="failed / cancelled / lost"),
-                       Line2D([], [], color=MUTED, lw=1.1, ls="--", marker=">", markersize=5,
-                              label="task taken over by another worker")],
-              frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.28), ncol=3)
+    blank = Line2D([], [], ls="none")
+    hatched = [(Patch(facecolor=SURFACE, edgecolor=MUTED, hatch=h), f"{st}: {why}")
+               for st, (h, _, why) in WASTED.items()]
+    key = [(blank, "Solid = finished, output used"),
+           (Patch(color=BLUE), "first attempt (.a0)"),
+           (Patch(color=AQUA), "re-run after a failed attempt"),
+           (Patch(color=ORANGE), "backup copy of a slow attempt"),
+           (blank, ""),
+           (blank, "Hatched = output not used"),
+           (blank, "(outline color = kind of attempt)"),
+           *hatched,
+           (blank, ""),
+           (Line2D([], [], color=MUTED, lw=1.1, ls="--", marker=">", markersize=5),
+            "task taken over by another worker"),
+           (blank, ""),
+           (blank, "Bar labels"),
+           (blank, "mN  = map task N (input split N)"),
+           (blank, "rN  = reduce task N (partition N)"),
+           (blank, ".aK = attempt K+1 of that task:"),
+           (blank, "      .a0 first, .a1 second, \u2026")]
+    leg = ax.legend(*zip(*key), loc="upper left", bbox_to_anchor=(1.02, 1.04), fontsize=7.5,
+                    frameon=True, fancybox=False, edgecolor=MUTED, framealpha=1,
+                    title="Key", title_fontproperties={"weight": "bold", "size": 8.5},
+                    alignment="left", borderpad=0.7, labelspacing=0.35)
+    for i, (_, text) in enumerate(key):
+        if text in ("Solid = finished, output used", "Hatched = output not used", "Bar labels"):
+            leg.get_texts()[i].set_fontweight("bold")
     fig.tight_layout()
+    fig.canvas.draw()                    # shrink the axes until the key's frame fits too
+    over = leg.get_window_extent().x1 + 8 - fig.bbox.x1
+    if over > 0:
+        pos = ax.get_position()
+        ax.set_position([pos.x0, pos.y0, pos.width - over / fig.bbox.width, pos.height])
     _write(plt, fig, args, name)
 
 

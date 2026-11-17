@@ -162,8 +162,8 @@ PLOT_CASES = {
     "combiner_unique": _rows(["combiner-off", "combiner-on"]),
     "scaling": _rows([f"{n}-workers" for n in range(1, 5)], workers=lambda c: int(c[0])),
     "fault": _rows(["normal", "worker-killed"]),
-    "granularity": _rows([f"maps={m}" for m in ex.GRANULARITY],
-                         num_maps=lambda c: int(c.split("=")[1])),
+    "granularity": _rows([f"maps={m}" for m in ex.GRANULARITY]
+                         + [f"reduces={r}" for r in ex.GRANULARITY_R]),
     "straggler": _rows([f"straggler-{s}+backup-{b}" for s in ("no", "yes") for b in ("off", "on")]),
     "combiner_sweep": _rows([f"keys={k}+combiner-{o}" for k in ex.SWEEP_KEYS for o in ("off", "on")],
                             keys=lambda c: int(c.split("=")[1].split("+")[0]), rows=1000),
