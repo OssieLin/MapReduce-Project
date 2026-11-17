@@ -122,6 +122,15 @@ def dataset(name, rows, keys, files=4, seed=42):
     except (OSError, ValueError):
         pass
     log(f"generating {name}: {rows} rows, {keys} keys")
+    write_csvs(d, rows, keys, files, seed)
+    with open(meta_path, "w") as f:
+        json.dump(meta, f)
+    return "/" + rel
+
+
+def write_csvs(d, rows, keys, files=4, seed=42):
+    """Write the dataset() rows into a fresh directory d as part0.csv .. part<files-1>.csv
+    (also used by examples/data/make_weather_1m.py)."""
     shutil.rmtree(d, ignore_errors=True)
     os.makedirs(d)
     rnd = random.Random(seed)
@@ -137,9 +146,6 @@ def dataset(name, rows, keys, files=4, seed=42):
                 w.writerow([names[c], DAYS[rnd.randrange(len(DAYS))],
                             f"{typical[c] + rnd.gauss(0, 6):.1f}",
                             f"ST{rnd.randrange(rows * 10):08d}"])
-    with open(meta_path, "w") as f:
-        json.dump(meta, f)
-    return "/" + rel
 
 
 def input_mb(inp):
