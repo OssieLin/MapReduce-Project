@@ -112,58 +112,8 @@ The lines are split across the `part-<r>.jsonl` files; `_SUCCESS` marks completi
 **Use a new `-o` for every run** (or `rm -rf` the old one first): the boss does not
 check, and leftover `part-*` files from an earlier run would duplicate keys.
 
-## Job monitoring
-These views are most useful once a job from step 6 is running or finished. All
-commands below run on the VM unless a heading says otherwise.
 
-### Logs
-```bash
-docker compose logs -f | grep -v -E '/get_task|/heartbeat'
-```
-Idle workers ask the boss for work about three times a second, so the raw
-`docker compose logs -f` is mostly `POST /get_task ... 200` lines; that is normal.
-The filter above hides them. During a job, workers print `running <job_id>/<task_id>`,
-and any traceback shows up here too.
-
-### Inspecting a job
-```bash
-curl -s localhost:5050/job/<id>  # status, per-task attempts, counters, backup stats
-curl -s localhost:5050/workers   # each worker's status, last-seen age, current task
-```
-`counters` is summed over finished tasks: `map_input_records`, `map_output_records`,
-`combine_input_records`, `combine_output_records`, `intermediate_bytes`, `shuffle_bytes`,
-`reduce_input_records`, `reduce_input_groups`, `reduce_output_records`, `skipped_rows`.
-
-### Watching from your laptop
-The cluster must already be running on the VM (step 3), and
-`curl -s localhost:5050/workers` there should print JSON. The boss only listens on
-the VM's localhost, so forward its port over SSH from the laptop (leave this running):
-```bash
-ssh -N -L 5050:localhost:5050 <user>@<vm>
-```
-The second `5050` is the boss's host port on the VM. If you changed it (see
-[Ports and storage](#ports-and-storage)), use that number instead.
-- **Watch jobs:** open http://localhost:5050/visualization in the laptop's
-  browser. No clone needed. The `curl` commands above also work from the laptop.
-- **Submit jobs:** this needs a second clone on the laptop, plus step 2 there,
-  because `./submit` reads the job file locally. Input data must already be on
-  the VM (`./upload_data` copies into the local `./shared`, so always run it on
-  the VM), and output appears in the VM's `./shared/output`.
-
-If `ssh` prints `bind [127.0.0.1]:5050: Address already in use`, something on the
-laptop (usually an earlier tunnel) already holds port 5050. Stop it, or pick another
-local port, then use that port in the laptop's URLs and in `BOSS_URL`:
-```bash
-lsof -nP -iTCP:5050 -sTCP:LISTEN     # shows the PID holding the port
-kill <PID>                           # if it's an old ssh tunnel
-# or forward a different local port instead:
-ssh -N -L 5051:localhost:5050 <user>@<vm>   # then http://localhost:5051/visualization
-```
-If browsing gives `channel N: open failed: connect failed: Connection refused`, the
-tunnel is fine, but nothing listens on that port on the VM. Check `docker compose ps -a`
-on the VM (see [Debug](#debug)).
-
-## 8. Advanced features usage
+## Advanced features usage
 Each feature below is run on the same 1M-row dataset, so the difference shows up in the
 visualization at http://localhost:5050/visualization (open it before you submit; from
 a laptop, see [Watching from your laptop](#watching-from-your-laptop)). All commands
@@ -258,6 +208,57 @@ more of the following for customization and notes.
 
 ---
 
+
+## Job monitoring
+These views are most useful once a job from step 6 is running or finished. All
+commands below run on the VM unless a heading says otherwise.
+
+### Logs
+```bash
+docker compose logs -f | grep -v -E '/get_task|/heartbeat'
+```
+Idle workers ask the boss for work about three times a second, so the raw
+`docker compose logs -f` is mostly `POST /get_task ... 200` lines; that is normal.
+The filter above hides them. During a job, workers print `running <job_id>/<task_id>`,
+and any traceback shows up here too.
+
+### Inspecting a job
+```bash
+curl -s localhost:5050/job/<id>  # status, per-task attempts, counters, backup stats
+curl -s localhost:5050/workers   # each worker's status, last-seen age, current task
+```
+`counters` is summed over finished tasks: `map_input_records`, `map_output_records`,
+`combine_input_records`, `combine_output_records`, `intermediate_bytes`, `shuffle_bytes`,
+`reduce_input_records`, `reduce_input_groups`, `reduce_output_records`, `skipped_rows`.
+
+### Watching from your laptop
+The cluster must already be running on the VM (step 3), and
+`curl -s localhost:5050/workers` there should print JSON. The boss only listens on
+the VM's localhost, so forward its port over SSH from the laptop (leave this running):
+```bash
+ssh -N -L 5050:localhost:5050 <user>@<vm>
+```
+The second `5050` is the boss's host port on the VM. If you changed it (see
+[Ports and storage](#ports-and-storage)), use that number instead.
+- **Watch jobs:** open http://localhost:5050/visualization in the laptop's
+  browser. No clone needed. The `curl` commands above also work from the laptop.
+- **Submit jobs:** this needs a second clone on the laptop, plus step 2 there,
+  because `./submit` reads the job file locally. Input data must already be on
+  the VM (`./upload_data` copies into the local `./shared`, so always run it on
+  the VM), and output appears in the VM's `./shared/output`.
+
+If `ssh` prints `bind [127.0.0.1]:5050: Address already in use`, something on the
+laptop (usually an earlier tunnel) already holds port 5050. Stop it, or pick another
+local port, then use that port in the laptop's URLs and in `BOSS_URL`:
+```bash
+lsof -nP -iTCP:5050 -sTCP:LISTEN     # shows the PID holding the port
+kill <PID>                           # if it's an old ssh tunnel
+# or forward a different local port instead:
+ssh -N -L 5051:localhost:5050 <user>@<vm>   # then http://localhost:5051/visualization
+```
+If browsing gives `channel N: open failed: connect failed: Connection refused`, the
+tunnel is fine, but nothing listens on that port on the VM. Check `docker compose ps -a`
+on the VM (see [Debug](#debug)).
 
  
 ## Ports and storage
