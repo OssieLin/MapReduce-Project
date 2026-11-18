@@ -54,6 +54,13 @@ To use a different port or storage folder, see [Ports and storage](#ports-and-st
 ```bash
 ./upload_data -f examples/data/weather/ -d /input/weather
 ```
+| Flag | Required | Meaning |
+|---|---|---|
+| `-f, --file <local_path>` | yes | Local `.csv` file, or a directory whose `.csv` files are all uploaded |
+| `-d, --dest <storage_path>` | yes | Destination in shared storage, e.g. `/input/weather`; pass it to `./submit -i` |
+| `-h, --help` | no | Show usage (also shown when run with no flags) |
+
+It copies the files into `./shared` on the machine it runs on, so run it on the VM.
 
 ## 5. How to write a MapReduce job
 A job is a Python file with `map_fn` and `reduce_fn`. Complete example: `examples/avg_temp.py`.
@@ -324,10 +331,10 @@ Both sides must agree:
 
   | Variable | Default | Condition |
   |---|---|---|
-  | `BACKUP_MIN_DONE` | 0.25 | at least this fraction of the phase's tasks is DONE |
-  | `BACKUP_SLOWDOWN` | 1.5 | it has run longer than this × the median DONE task duration |
-  | `BACKUP_MIN_SECONDS` | 2 | it has run longer than this many seconds |
-  | `BACKUP_MAX_FRACTION` | 0.10 | the job has launched fewer than `max(1, ceil(this × tasks))` backups |
+  | `BACKUP_MIN_DONE` | 0.25 | at least `BACKUP_MIN_DONE` fraction of the phase's tasks is DONE |
+  | `BACKUP_SLOWDOWN` | 1.5 | it has run longer than `BACKUP_SLOWDOWN` * the median DONE task duration |
+  | `BACKUP_MIN_SECONDS` | 2 | it has run longer than `BACKUP_MIN_SECONDS` many seconds |
+  | `BACKUP_MAX_FRACTION` | 0.10 | the job has launched fewer than `max(1, ceil(BACKUP_MAX_FRACTION × tasks))` backups |
 
   It must also have an estimated remaining time (`elapsed × (1 − progress) / progress`)
   above the median, run on a different worker than the one asking, and have no backup yet.
