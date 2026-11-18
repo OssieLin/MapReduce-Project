@@ -108,6 +108,18 @@ When almost every key is unique (station ids), the combiner has nothing to merge
 (77.4 MB → 77.2 MB). It only adds work: **12.6 s → 14.2 s** (12% slower). A combiner
 pays off only when keys repeat within a map task.
 
+The combiner merges only inside one map task, so what matters is how often a key repeats
+*within a task*, not across the whole dataset. Counted on the 3M-row dataset, 16 map tasks:
+
+| Key | Distinct in dataset | Rows per map task | Distinct per map task | Rows per key per task | Records after combining (all tasks) |
+|---|---|---|---|---|---|
+| `city` (repeated keys) | 100 | ~187,500 | **100** | ~1,875 | 1,600 (−99.95%) |
+| `station` (control) | 2,854,961 | ~187,500 | **~186,900** | ~1.003 | 2,990,580 (−0.3%) |
+
+The station keys come from 30M possible ids (10 × rows). About 3M random draws give
+30M × (1 − e^(−0.1)) ≈ 2.85M distinct ids, and within one task's 187,500 draws almost none
+collide. That 0.3% reduction matches the 77.4 → 77.2 MB drop in intermediate bytes.
+
 ### Scaling with the number of workers
 ![scaling](results/vm-3M/scaling.png)
 
