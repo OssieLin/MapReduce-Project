@@ -41,7 +41,8 @@ BACKUP_CFG = {
 
 
 def now():
-    """Single clock source, so tests can monkeypatch time."""
+      """The boss's only clock: all timestamps and timeouts use it, so tests can
+    replace it with a fake clock and skip ahead instead of really waiting."""
     return time.time()
 
 
